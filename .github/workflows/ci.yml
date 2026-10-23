@@ -1,0 +1,33 @@
+name: Python checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: python -m pip install -r requirements.txt
+      - name: Test
+        run: python -m unittest discover -s tests -v
+      - name: Run demos
+        run: |
+          python -m race_supply.main --demo
+          python examples/demo.py
+      - name: Build and install locally
+        run: |
+          bash scripts/build.sh
+          bash scripts/deploy.sh "$RUNNER_TEMP/race-supply-demo"
+          "$RUNNER_TEMP/race-supply-demo/bin/python" -m race_supply.main --demo

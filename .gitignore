@@ -5,6 +5,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+work/
 .pytest_cache/
 .coverage
 htmlcov/
@@ -13,7 +14,9 @@ htmlcov/
 !.env.example
 *.pem
 *.key
-data/
+data/*
+!data/README.md
+!data/sample_requests.csv
 *.db
 *.sqlite*
 *.log

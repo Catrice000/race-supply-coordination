@@ -71,13 +71,45 @@ python -m unittest discover -s tests -v
 ├── docs/
 │   ├── design.md
 │   └── api.md
-└── tests/
-    └── test_core.py
+├── tests/
+│   └── test_core.py
+├── examples/
+│   └── demo.py
+├── scripts/
+│   ├── build.sh
+│   └── deploy.sh
+├── config/
+│   └── default.yaml
+├── data/
+│   ├── README.md
+│   └── sample_requests.csv
+└── .github/
+    ├── workflows/
+    │   └── ci.yml
+    ├── ISSUE_TEMPLATE/
+    │   ├── bug_report.md
+    │   └── feature_request.md
+    └── PULL_REQUEST_TEMPLATE.md
 ```
 
 参见[设计说明](docs/design.md)、[接口说明](docs/api.md)、[贡献指南](CONTRIBUTING.md)和[更新记录](CHANGELOG.md)。本项目采用 [MIT License](LICENSE)。
 
 训练场景为合成演练，本仓库不是赛事公司的官方系统。先完成访谈，再确认功能范围和验收标准。
+
+## 示例、构建与本地部署
+
+安装后运行 `python examples/demo.py`，读取仓库中的虚构 CSV 数据。
+
+以下脚本需要 Bash；Windows 可使用 Git Bash 或 WSL。构建生成 wheel，部署在指定的新目录建立虚拟环境并安装 wheel，不会启动线上服务：
+
+```sh
+bash scripts/build.sh
+bash scripts/deploy.sh ./work/local-demo
+```
+
+目标目录须不存在，部署后会输出运行命令。构建可能需要访问 Python 包索引。`config/default.yaml` 是未来应用的配置草案，当前命令行不会加载它。
+
+GitHub Actions 在推送及 Pull Request 时验证 Python 3.10/3.12 的安装、测试、示例、构建与本地部署。Issue 和 Pull Request 已提供模板。
 
 ## 训练场景来源
 

@@ -1,0 +1,6 @@
+# 非机密配置草案。当前命令行不读取此文件；需求确认后再接入。
+project:
+  name: race-supply-coordination
+  mode: demo
+data:
+  sample_file: data/sample_requests.csv
