@@ -30,7 +30,54 @@
 
 ## 当前状态
 
-项目初始化阶段，尚未实现应用代码。下一步梳理业务流程、确认字段和状态，再开发最小可演示版本。
+当前为 Python 项目骨架，包含内存版命令行演示。支持需求创建、派单和签收，退出后不保存数据。尚无网页、数据库或登录功能；业务流程仍需访谈验证。
+
+## 安装与运行
+
+需要 Python 3.10 或更高版本。在仓库根目录执行：
+
+```sh
+python -m venv .venv
+# Windows PowerShell 激活环境：
+.venv\Scripts\Activate.ps1
+# macOS / Linux：source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m race_supply.main --demo
+python -m unittest discover -s tests -v
+```
+
+演示使用虚构数据，展示“待调度 → 已派单 → 已签收”。
+
+## 项目目录
+
+```text
+├── README.md
+├── LICENSE
+├── .gitignore
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── requirements.txt
+├── pyproject.toml
+├── src/
+│   └── race_supply/
+│       ├── __init__.py
+│       ├── main.py
+│       ├── core/
+│       │   ├── __init__.py
+│       │   └── supplies.py
+│       └── utils/
+│           ├── __init__.py
+│           └── validation.py
+├── docs/
+│   ├── design.md
+│   └── api.md
+└── tests/
+    └── test_core.py
+```
+
+参见[设计说明](docs/design.md)、[接口说明](docs/api.md)、[贡献指南](CONTRIBUTING.md)和[更新记录](CHANGELOG.md)。本项目采用 [MIT License](LICENSE)。
+
+训练场景为合成演练，本仓库不是赛事公司的官方系统。先完成访谈，再确认功能范围和验收标准。
 
 ## 训练场景来源
 

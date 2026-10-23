@@ -1,0 +1,2 @@
+# Install the local package. No third-party runtime dependencies.
+-e .
