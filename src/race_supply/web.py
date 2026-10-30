@@ -162,6 +162,13 @@ def create_app(data_dir: Path | None = None, *, answerer=None, allowed_hosts=Non
 
     from race_supply.admin import register_admin
     admin_data=register_admin(app,store,folder,admin,indexer=admin_indexer)
+    from race_supply.agent_api import register_agent
+    def agent_search(query,current):
+        docs=store.documents(current,chat_only=True)
+        if len(docs)>20 or sum(len(d["content"]) for d in docs)>200_000:
+            raise ValueError("可见资料超过本机检索范围，请管理员整理知识库")
+        return retrieve_and_answer(query,docs,folder/"rag_cache",True)
+    register_agent(app,store,folder,user,admin,admin_data,agent_search)
 
     @app.get("/api/documents")
     async def documents(current=Depends(user)):

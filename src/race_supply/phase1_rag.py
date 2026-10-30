@@ -396,6 +396,11 @@ def grounded_answer(question: str, hits: list[dict], source: str,
         '没有足够依据时status必须为insufficient且claims为空，不得输出无依据结论。'
     )
     raw = call_llm(messages, config, transport=transport)
+    return validate_grounded_response(raw,hits)
+
+
+def validate_grounded_response(raw: str, hits: list[dict]) -> str:
+    """【可复用核心】独立验证模型最终JSON，供固定RAG与Agent共同使用。"""
     try:
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
         payload = json.loads(cleaned)

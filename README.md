@@ -8,6 +8,8 @@
 
 ## Web启动
 
+聊天页已增加可选Agent模式，支持自主选择工具、批次核对和内部复核草稿；管理员在`/admin/agent`导入批次快照与确认过的结构化规则。建草稿需每次明确授权，提交需在界面人工确认。详见[Agent工具与调用约束](docs/Agent工具与调用约束.md)。
+
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m race_supply.manage admin --role admin
