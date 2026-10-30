@@ -1,4 +1,4 @@
-# 阶段1单文件原型；Python 3.10+。GPU向量编码，CPU FAISS检索。
+# Phase-1 CLI; Python 3.10+. GPU embeddings and CPU FAISS retrieval.
 numpy==2.2.6
 faiss-cpu==1.15.1
 rank-bm25==0.2.2

@@ -13,6 +13,7 @@ dependencies = []
 
 [project.scripts]
 race-supply = "race_supply.main:main"
+race-supply-rag = "race_supply.phase1_rag:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
