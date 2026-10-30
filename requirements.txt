@@ -1,3 +1,2 @@
 # Install the local package and current phase-1 RAG dependencies.
--e .
--r requirements-rag.txt
+-e .[rag,web]

@@ -1,6 +1,8 @@
 # 接口说明
 
-当前提供 Python 函数和命令行，没有 HTTP API。
+当前提供Python CLI、FastAPI接口、员工聊天页和SSR管理后台。Web启动和后台接口见[管理后台运行说明](管理后台运行说明.md)。
+
+`POST /chat`接收`{session_id,question,retrieval_only?}`，返回SSE事件session/status/delta/sources/done或error；普通接口错误返回HTTP状态码、code和中文message。`GET /sessions`、`GET /sessions/{id}/messages`仅访问本人历史。登录使用HttpOnly Cookie中的JWT，变更接口需`X-Requested-With: race-supply`且同源。
 
 ## 阶段1资料问答
 

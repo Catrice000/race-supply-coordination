@@ -1,9 +1,21 @@
 # 赛事补给协同助手
 
-面向赛事企业员工与管理员的资料问答和补给协同项目。员工端规划为聊天页，支持上传、查询；管理员端规划为知识库维护与记录查看，后续服务端采用异步FastAPI。
+面向赛事企业员工与管理员的资料问答和补给协同项目。已实现异步FastAPI服务、员工SSE聊天页、SQLite记录存储，以及服务端渲染的管理员后台。
 
-**目前已实现阶段1命令行RAG原型**：读取本地赛事补给Markdown，每500字符切片，使用本地中文BGE模型向量化并存入FAISS，以BM25＋向量检索融合取top3，再调用可配置的大模型生成带来源的回答。Windows可通过DirectML使用GPU。网页、文件上传接口、登录权限、知识图谱展示和数据库仍属于后续规划，详见[架构方案](docs/架构方案.md)。
+员工可上传个人资料、查询已发布共享知识、查看历史与引用；管理员使用JWT鉴权，维护Markdown/PDF知识库、文档版本、数据库提示词模板和人工审计标记。中文BGE本地向量化、FAISS与BM25混合检索仍保留单文件CLI入口。
 
+**本机单企业原型，不执行正式调度、审批或库存写回。**来源图谱仅表示原文提及，正式业务规则须由业务方提供确认。详见[管理后台运行说明](docs/管理后台运行说明.md)及[架构方案](docs/架构方案.md)。
+
+## Web启动
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m race_supply.manage admin --role admin
+.\.venv\Scripts\python.exe -m race_supply.manage staff --role employee
+.\.venv\Scripts\python.exe -m uvicorn race_supply.web:create_app --factory --host 127.0.0.1 --port 8000
+```
+
+访问本机`http://127.0.0.1:8000/`，管理员登录后进入`/admin`。没有默认账户；密码在终端交互输入。JWT有效期15分钟，过期需重新登录。本机只启动一个worker。未配置对话模型时可先勾选“仅检索”，管理员建库使用本地向量模型。
 ## 安装与运行
 
 需要Python 3.10+。在仓库根目录执行（Windows PowerShell）：
@@ -80,7 +92,7 @@ race-supply-coordination/
     └── PULL_REQUEST_TEMPLATE.md
 ```
 
-阶段1继续采用单文件形式；后续接入FastAPI时，再按架构方案拆分检索、模型适配与服务模块。
+CLI核心保留单文件；Web服务分为web.py、storage.py、auth.py、admin.py、pdf_worker.py、templates/和static/。当前使用SQLite，架构方案中的PostgreSQL等生产组件仍为后续规划。
 
 ## 验证与早期演示
 

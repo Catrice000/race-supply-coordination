@@ -1,5 +1,7 @@
 # 项目文档
 
+- [管理后台运行说明](管理后台运行说明.md)：JWT、Markdown/PDF索引任务、提示词版本、审计标记及本机Web启动。
+
 - [本地GPU运行说明](本地GPU运行说明.md)：阶段1原型安装、配置、GPU检索与验证结果。
 - [配置说明](../config/README.md)：环境变量、密钥模板和缓存位置。
 - [原型源码](../src/race_supply/phase1_rag.py)与[检索示例](../examples/rag_demo.py)：可运行的命令行问答入口。

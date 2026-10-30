@@ -62,24 +62,41 @@ class Chunk:
     end: int
     line_start: int
     line_end: int
+    heading: str = ""
 
 
-def split_document(text: str, size: int = 500) -> list[Chunk]:
-    """【可复用核心】按500字符无重叠切片，保留原始字符与行范围。
+def split_document(text: str, size: int = 500, overlap: int = 80,
+                   strategy: str = "paragraph") -> list[Chunk]:
+    """【可复用核心】优先段落/句子边界，保留原文位置、标题与重叠上下文。
 
-    不丢尾片，不清洗改写原文；空白片忽略。阶段1采用固定切片，后续可扩展为
-    标题感知分块，但不能破坏来源定位。字符数不是模型Token数。
+    超长段落仍受size上限限制；fixed模式兼容最初的500字符无重叠验证。
+    heading仅为定位元数据，不计入原文范围，不自动改写业务条款。
     """
-    if size < 1:
-        raise ValueError("切片大小必须大于0")
+    if size < 1 or not 0 <= overlap < size or strategy not in {"paragraph", "fixed"}:
+        raise ValueError("分块参数无效：需0 <= overlap < size，strategy为paragraph或fixed")
     chunks = []
-    for start in range(0, len(text), size):
-        end = min(start + size, len(text))
-        content = text[start:end]
-        if content.strip():
-            chunks.append(Chunk(f"S{len(chunks)+1}", content, start, end,
-                                text.count("\n", 0, start) + 1,
-                                text.count("\n", 0, end-1) + 1))
+    boundaries = [m.end() for m in re.finditer(r"\n\s*\n|[。！？；]\s*", text)]
+    headings = [(m.start(), m.group(1).strip())
+                for m in re.finditer(r"^#{1,6}\s+(.+)$", text, re.M)]
+    # 标题之间独立分块，避免多条短规则被500字窗口混在一起稀释语义。
+    sections = sorted({0,len(text),*(pos for pos,_ in headings)}) if strategy=="paragraph" else [0,len(text)]
+    for section_start,section_end in zip(sections,sections[1:]):
+        start=section_start
+        while start < section_end:
+            end = min(start + size, section_end)
+            if strategy == "paragraph" and end < section_end:
+                choices = [b for b in boundaries if start + max(overlap + 1, size//2) <= b <= end]
+                if choices:
+                    end = choices[-1]
+            content = text[start:end]
+            if content.strip():
+                heading = next((h for pos,h in reversed(headings) if pos <= start), "")
+                chunks.append(Chunk(f"S{len(chunks)+1}", content, start, end,
+                                    text.count("\n", 0, start) + 1,
+                                    text.count("\n", 0, end-1) + 1, heading))
+            if end == section_end:
+                break
+            start = end - overlap
     if not chunks:
         raise ValueError("Markdown没有可检索文本")
     return chunks
@@ -172,7 +189,8 @@ def local_encoder(model_id: str, device: str):
         raise ValueError("本地适配仅验证Xenova/bge-small-zh-v1.5；其他模型请另行适配")
     files = {}
     for filename in ("tokenizer.json", "onnx/model.onnx"):
-        files[filename] = hf_hub_download(model_id, filename, revision=revision, cache_dir="work/model_cache")
+        files[filename] = hf_hub_download(model_id, filename, revision=revision,
+                                          cache_dir=os.getenv("RAG_MODEL_CACHE","work/model_cache"))
     tokenizer = Tokenizer.from_file(files["tokenizer.json"])
     tokenizer.no_truncation()
     tokenizer.enable_padding(pad_id=0, pad_token="[PAD]")
@@ -235,7 +253,7 @@ def load_or_build_index(chunks: list[Chunk], config: APIConfig, cache_dir: Path)
     """
     import faiss
     import numpy as np
-    identity = {"schema": 3, "backend": config.backend, "url": config.base_url, "model": config.model,
+    identity = {"schema": 4, "backend": config.backend, "url": config.base_url, "model": config.model,
                 "chunks": [asdict(c) for c in chunks]}
     digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     folder = cache_dir / digest
@@ -262,7 +280,8 @@ def load_or_build_index(chunks: list[Chunk], config: APIConfig, cache_dir: Path)
     return index
 
 
-def hybrid_search(question: str, chunks: list[Chunk], index, bm25, query_vector) -> list[dict]:
+def hybrid_search(question: str, chunks: list[Chunk], index, bm25, query_vector,
+                  min_score: float = 0.50) -> list[dict]:
     """【可复用核心】BM25和向量各召回最多20片，以RRF融合再取top3。
 
     不直接相加不同量纲分数。BM25只纳入含问题词的片段，兼容小语料IDF为负。
@@ -270,6 +289,8 @@ def hybrid_search(question: str, chunks: list[Chunk], index, bm25, query_vector)
     """
     if query_vector.shape != (1, index.d):
         raise ValueError("问题向量维度与索引不一致，请检查模型或重建缓存")
+    if not -1 <= min_score <= 1:
+        raise ValueError("相关性阈值必须在-1至1之间")
     words = tokenize(question)
     scores = bm25.get_scores(words)
     candidates = [i for i,c in enumerate(chunks) if set(words) & set(tokenize(c.text))]
@@ -281,7 +302,13 @@ def hybrid_search(question: str, chunks: list[Chunk], index, bm25, query_vector)
         for rank, i in enumerate(ranking, 1):
             fusion[i] = fusion.get(i, 0.0) + 1.0 / (60 + rank)
     cosine = dict(zip(dense, map(float, similarities[0])))
-    top = sorted(fusion, key=lambda i: (-fusion[i], i))[:3]
+    # RRF只能排序，不能表示是否相关；对所有候选另算余弦再做门控。
+    # 阈值是当前BGE模型的可调起点，不是概率，也不能替代领域评测。
+    for i in fusion:
+        if i not in cosine:
+            cosine[i] = float(index.reconstruct(i) @ query_vector[0])
+    eligible = [i for i in fusion if cosine[i] >= min_score]
+    top = sorted(eligible, key=lambda i: (-fusion[i], i))[:3]
     return [{"chunk": chunks[i], "rrf": fusion[i], "cosine": cosine.get(i)} for i in top]
 
 
@@ -304,7 +331,7 @@ def build_prompt(question: str, hits: list[dict], source: str) -> list[dict]:
     )
     evidence = [{"id": h["chunk"].id, "source": source,
                  "lines": [h["chunk"].line_start, h["chunk"].line_end],
-                 "text": h["chunk"].text} for h in hits]
+                 "heading": h["chunk"].heading, "text": h["chunk"].text} for h in hits]
     # JSON序列化只用于分隔数据，不构成防注入或事实正确性的充分保证。
     content = json.dumps({"question": question, "untrusted_evidence": evidence}, ensure_ascii=False)
     return [{"role": "system", "content": system}, {"role": "user", "content": content}]
@@ -341,8 +368,76 @@ def check_citations(answer: str, hits: list[dict]) -> None:
     """【可复用核心】拦截不存在的引用；编号有效不等于事实支持，仍需人工评测。"""
     allowed = {h["chunk"].id for h in hits}
     used = set(re.findall(r"\[(S\d+)\]", answer))
+    if not used:
+        raise ValueError("缺少来源引用，已阻止展示；请核对资料后重试")
     if used - allowed:
         raise ValueError("回答引用了未提供的片段，已阻止展示，请人工核查")
+
+
+def grounded_answer(question: str, hits: list[dict], source: str,
+                    config: APIConfig, *, transport=None, history=None, system_prompt=None) -> str:
+    """【可复用核心】要求逐项来源与原文摘录，不支持的事实不展示。
+
+    摘录必须是实际原文的连续子串，防止模型编造证据。此为结构/摘录校验，
+    不能证明结论在语义上由摘录推出；仍需标准问答评测与人工复核。
+    """
+    if not hits:
+        return "资料不足：没有达到相关性门槛的片段，请补充具体站点、批次或正式资料。"
+    messages = build_prompt(question, hits, source)
+    if system_prompt:
+        messages[0]["content"] += "\n管理员维护的业务模板：\n" + system_prompt
+    # 历史只用于理解追问，不作为制度证据；只接收服务端验证所有权后的历史。
+    if history:
+        messages[1:1] = history[-12:]
+    messages[0]["content"] += (
+        '只输出JSON对象：{"status":"answered或insufficient","claims":'
+        '[{"text":"一项结论","citations":["S1"],"quotes":[{"id":"S1","text":"连续原文摘录"}]}],'
+        '"missing":["待确认事项"]}。每项结论必须引用并摘录依据。'
+        '没有足够依据时status必须为insufficient且claims为空，不得输出无依据结论。'
+    )
+    raw = call_llm(messages, config, transport=transport)
+    try:
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+        payload = json.loads(cleaned)
+        if not isinstance(payload, dict) or payload.get("status") not in {"answered", "insufficient"}:
+            raise ValueError("回答状态无效")
+        claims, missing = payload.get("claims"), payload.get("missing", [])
+        if not isinstance(claims, list) or not isinstance(missing, list) or not all(isinstance(x,str) for x in missing):
+            raise ValueError("回答结构无效")
+        if payload["status"] == "insufficient":
+            if claims:
+                raise ValueError("资料不足状态不得携带业务结论")
+            return "资料不足，暂不能给出有依据的结论。\n待确认：" + "；".join(missing or ["请补充正式资料或明确问题"])
+        if not claims or len(claims) > 12:
+            raise ValueError("结论数量无效")
+        evidence = {h["chunk"].id: h["chunk"].text for h in hits}
+        lines = []
+        for item in claims:
+            text, ids, quotes = item["text"], item["citations"], item["quotes"]
+            if not isinstance(text,str) or not text.strip() or not isinstance(ids,list) or not ids:
+                raise ValueError("结论缺少引用")
+            if not all(isinstance(i,str) and i in evidence for i in ids) or not isinstance(quotes,list):
+                raise ValueError("引用不属于本次资料")
+            # 同时检查结论中模型自行插入的编号，不能用合法外层编号掩盖虚假来源。
+            if set(re.findall(r"\[(S\d+)\]",text)) - set(ids):
+                raise ValueError("结论包含额外来源")
+            verified = set()
+            for quote in quotes:
+                qid, value = quote["id"], quote["text"]
+                if qid not in ids or not isinstance(value,str) or len(value.strip()) < 4 or value not in evidence[qid]:
+                    raise ValueError("摘录与原文不一致")
+                verified.add(qid)
+            if verified != set(ids):
+                raise ValueError("部分引用没有原文摘录")
+            lines.append(text.strip() + " " + "".join(f"[{i}]" for i in ids))
+            lines.extend(f"  依据[{q['id']}]：{q['text']}" for q in quotes)
+        result = "\n".join(lines)
+        check_citations(result, hits)
+        if missing:
+            result += "\n待确认（非业务结论）：" + "；".join(missing)
+        return result
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise ValueError("回答未通过来源与原文摘录校验，已阻止展示；请人工复核或重试") from None
 
 
 def self_test() -> None:
@@ -350,14 +445,14 @@ def self_test() -> None:
     import faiss
     import httpx
     from rank_bm25 import BM25Okapi
-    chunks = split_document("甲"*501)
+    chunks = split_document("甲"*501, overlap=0, strategy="fixed")
     assert [len(c.text) for c in chunks] == [500, 1]
-    chunks = split_document("饮用水签收检查数量。\n", 8)
+    chunks = split_document("饮用水签收检查数量。\n", 8, overlap=0, strategy="fixed")
     vectors = normalized_vectors([[1, 0], [0, 1]])
     index = faiss.IndexFlatIP(2); index.add(vectors)
     bm25 = BM25Okapi([tokenize(c.text) for c in chunks])
     hits = hybrid_search("饮用水", chunks, index, bm25, vectors[:1])
-    assert len(hits) == 2 and hits[0]["chunk"].id == "S1"
+    assert len(hits) == 1 and hits[0]["chunk"].id == "S1"
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp)/"测试索引.faiss"
         p.write_bytes(faiss.serialize_index(index).tobytes())
@@ -389,6 +484,9 @@ def main() -> None:
     parser.add_argument("--env-file", type=Path, default=Path(".env.local"))
     parser.add_argument("--cache-dir", type=Path, default=Path("work/rag_cache"))
     parser.add_argument("--chunk-size", type=int, default=500)
+    parser.add_argument("--chunk-overlap", type=int, default=80)
+    parser.add_argument("--chunk-strategy", choices=["paragraph", "fixed"], default="paragraph")
+    parser.add_argument("--min-score", type=float, default=0.50, help="余弦门槛，须结合领域评测调参")
     parser.add_argument("--question", help="单次提问；不传则交互输入")
     parser.add_argument("--retrieval-only", action="store_true", help="仅检索；local模式不需要密钥")
     parser.add_argument("--self-test", action="store_true", help="不联网的核心流程验证")
@@ -419,7 +517,7 @@ def main() -> None:
     if args.document.stat().st_size > 10*1024*1024:
         raise ValueError("原型只处理10MB以内的UTF-8 Markdown")
     text = args.document.read_text(encoding="utf-8-sig")
-    chunks = split_document(text, args.chunk_size)
+    chunks = split_document(text, args.chunk_size, args.chunk_overlap, args.chunk_strategy)
     index = load_or_build_index(chunks, embedding, args.cache_dir)
     bm25 = BM25Okapi([tokenize(c.text) for c in chunks])
     print("输入问题；输入 /exit 退出。本原型每次独立检索，不维护多轮会话记忆。")
@@ -435,7 +533,12 @@ def main() -> None:
                 continue
             if len(question) > 2000:
                 raise ValueError("问题最长2000字符")
-            hits = hybrid_search(question, chunks, index, bm25, embed_texts([question], embedding, is_query=True))
+            hits = hybrid_search(question, chunks, index, bm25, embed_texts([question], embedding, is_query=True), args.min_score)
+            if not hits:
+                print("资料不足：未找到达到相关性门槛的来源，请补充具体问题或资料。")
+                if args.question is not None:
+                    break
+                continue
             print("\n检索来源（RRF为排序分数，不是置信度）：")
             for h in hits:
                 c = h["chunk"]
@@ -443,8 +546,7 @@ def main() -> None:
                 if args.retrieval_only:
                     print(c.text)
             if not args.retrieval_only:
-                answer = call_llm(build_prompt(question, hits, args.document.name), llm)
-                check_citations(answer, hits)
+                answer = grounded_answer(question, hits, args.document.name, llm)
                 print("\n回答：\n" + answer)
                 if not re.search(r"\[S\d+\]", answer):
                     print("提示：本回答未给片段引用，不能当作已证实结论。")
