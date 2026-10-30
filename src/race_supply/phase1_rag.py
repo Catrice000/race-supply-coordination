@@ -3,35 +3,34 @@
 """阶段1：赛事补给资料裸问答，单文件，无Web。
 
 安装依赖（建议在虚拟环境中）：
-    python -m pip install numpy faiss-cpu rank-bm25 jieba httpx python-dotenv
+    python -m pip install numpy faiss-cpu rank-bm25 jieba httpx python-dotenv onnxruntime-directml tokenizers huggingface-hub
 
 配置项目根目录 .env.local（不要提交Git，也不要把密钥发到聊天）：
-    OPENROUTER_API_KEY=你的密钥
-    LLM_MODEL=你在供应商处确认可用的对话模型ID
-    EMBEDDING_MODEL=你在供应商处确认可用的向量模型ID
-    # 默认对话、向量都用OpenRouter；也可单独配置兼容接口：
-    # LLM_BASE_URL=https://openrouter.ai/api/v1
-    # LLM_API_KEY_ENV=OPENROUTER_API_KEY
-    # EMBEDDING_BASE_URL=https://openrouter.ai/api/v1
-    # EMBEDDING_API_KEY_ENV=OPENROUTER_API_KEY
-
-使用DeepSeek官方对话API时，配置改为：
+    # 默认本地BGE向量化，不需要向量API密钥。Windows GPU使用 --device dml。
+    # 对话密钥仍需单独配置，下方提供DeepSeek配置。
     LLM_BASE_URL=https://api.deepseek.com
     LLM_MODEL=deepseek-flash
     LLM_API_KEY_ENV=DEEPSEEK_API_KEY
     DEEPSEEK_API_KEY=仅在本地填写
-    # 向量服务仍独立配置EMBEDDING_BASE_URL、EMBEDDING_MODEL和对应密钥。
+    LLM_THINKING=disabled
+    LLM_MAX_TOKENS=2048
+    # 本地向量默认无需新密钥；--embedding-backend api才需单独配置向量API。
     # DeepSeek对话密钥不代表其他供应商的向量API也能使用。
+    # 换OpenRouter：LLM_BASE_URL=https://openrouter.ai/api/v1，另配模型与密钥变量。
+    # 在线向量：另配 EMBEDDING_BASE_URL、EMBEDDING_MODEL、EMBEDDING_API_KEY_ENV。
 
 运行（从项目根目录）：
-    python 赛事补给问答原型.py --document docs/补给制度.md
-    python 赛事补给问答原型.py --document docs/补给制度.md --question "签收时需要核对什么？"
-    python 赛事补给问答原型.py --document docs/补给制度.md --retrieval-only --question "单位换算"
-    python 赛事补给问答原型.py --self-test
+    python src/race_supply/phase1_rag.py --document docs/discovery-report.md --device dml
+    python src/race_supply/phase1_rag.py --document docs/discovery-report.md --device dml --question "签收时需要核对什么？"
+    python src/race_supply/phase1_rag.py --document docs/discovery-report.md --retrieval-only --question "单位换算"
+    python src/race_supply/phase1_rag.py --self-test
 
 文档可换成任一本地赛事补给Markdown；不是报销业务。不自动使用访谈导出报告
-冒充正式制度。首次运行向量化会调用API；后续源文件/模型/分块参数不变时复用
-本地FAISS缓存。对话和向量API都可能计费，不自动更换模型或付费回退。
+冒充正式制度。首次运行下载本地模型；本地向量化不调用API；后续源文件/模型/分块参数不变时复用
+本地FAISS缓存。对话API、可选在线向量API可能计费，不自动更换模型或付费回退。
+GPU通过ONNX Runtime DirectML执行中文BGE向量化；FAISS检索在CPU运行。
+Windows安装上面的DirectML依赖；其他系统改装onnxruntime并使用 --device cpu。
+ONNX_DML_DEVICE_ID默认0，多显卡电脑可按DXGI适配器编号调整；不是CUDA编号。
 
 本地索引包含原文，不提供多用户鉴权；仅用于已获授权的本机资料验证。
 后续FastAPI阶段须在检索、文件下载、会话等全部入口增加一致的数据权限。
@@ -47,6 +46,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+from functools import lru_cache
 from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -110,8 +110,14 @@ class APIConfig:
     base_url: str
     model: str
     key_env: str
+    backend: str = "api"
+    device: str = "auto"
 
     def validate(self) -> None:
+        if self.backend == "local":
+            if not self.model.strip() or self.device not in {"auto", "cpu", "dml"}:
+                raise ValueError("本地模型ID或设备设置无效")
+            return
         parts = urlsplit(self.base_url)
         local = parts.hostname in {"localhost", "127.0.0.1", "::1"}
         if (parts.scheme != "https" and not (parts.scheme == "http" and local)) or not parts.hostname:
@@ -151,9 +157,62 @@ def post_api(config: APIConfig, route: str, body: dict, *, transport=None) -> di
     return data
 
 
-def embed_texts(texts: list[str], config: APIConfig):
+@lru_cache(maxsize=1)
+def local_encoder(model_id: str, device: str):
+    """【可复用核心】Windows本地ONNX编码；DirectML使用GPU，FAISS保持CPU。
+
+    固定模型修订，下载不执行远程Python代码；显式dml不可用时报错。
+    ONNX_DML_DEVICE_ID选择DXGI适配器编号，默认0，不能等同nvidia-smi编号。
+    """
+    import onnxruntime as ort
+    from tokenizers import Tokenizer
+    from huggingface_hub import hf_hub_download
+    revision = "75c43b069aac4d136ba6bc1122f995fedcfd2781"
+    if model_id != "Xenova/bge-small-zh-v1.5":
+        raise ValueError("本地适配仅验证Xenova/bge-small-zh-v1.5；其他模型请另行适配")
+    files = {}
+    for filename in ("tokenizer.json", "onnx/model.onnx"):
+        files[filename] = hf_hub_download(model_id, filename, revision=revision, cache_dir="work/model_cache")
+    tokenizer = Tokenizer.from_file(files["tokenizer.json"])
+    tokenizer.no_truncation()
+    tokenizer.enable_padding(pad_id=0, pad_token="[PAD]")
+    available = "DmlExecutionProvider" in ort.get_available_providers()
+    if device == "dml" and not available:
+        raise ValueError("DirectML不可用，请安装onnxruntime-directml")
+    selected = "dml" if available and device != "cpu" else "cpu"
+    options = ort.SessionOptions()
+    options.enable_mem_pattern = False
+    options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    # 按需启用一次性能分析，用实际算子provider验证GPU执行，不只检查设备列表。
+    options.enable_profiling = os.getenv("RAG_PROFILE_GPU") == "1"
+    options.profile_file_prefix = "work/rag_onnx_profile"
+    providers = [("DmlExecutionProvider", {"device_id": int(os.getenv("ONNX_DML_DEVICE_ID", "0"))}), "CPUExecutionProvider"] if selected == "dml" else ["CPUExecutionProvider"]
+    session = ort.InferenceSession(files["onnx/model.onnx"], sess_options=options, providers=providers)
+    if selected == "dml" and session.get_providers()[0] != "DmlExecutionProvider":
+        raise ValueError("GPU初始化失败，未静默回退CPU")
+    print(f"本地模型：{model_id}；修订：{revision}；执行后端：{selected}")
+    return tokenizer, session, selected
+
+
+def embed_texts(texts: list[str], config: APIConfig, *, is_query: bool = False):
     """【可复用核心】向量供应商独立于对话供应商；分批请求并按index还原顺序。"""
     import numpy as np
+    if config.backend == "local":
+        tokenizer, session, device = local_encoder(config.model, config.device)
+        inputs = [("为这个句子生成表示以用于检索相关文章：" + t) if is_query else t for t in texts]
+        batches = []
+        for start in range(0, len(inputs), 8):
+            encoded = tokenizer.encode_batch(inputs[start:start+8])
+            if any(len(item.ids) > 512 for item in encoded):
+                raise ValueError("文本超过512 Token，请缩小切片或问题；禁止静默截断")
+            fields = {"input_ids": np.asarray([item.ids for item in encoded], dtype=np.int64),
+                      "attention_mask": np.asarray([item.attention_mask for item in encoded], dtype=np.int64),
+                      "token_type_ids": np.asarray([item.type_ids for item in encoded], dtype=np.int64)}
+            feed = {item.name: fields[item.name] for item in session.get_inputs()}
+            outputs = session.run(None, feed)
+            # BGE使用最后隐藏层的CLS向量；这里使用已固定并验证的ONNX导出。
+            batches.append(normalized_vectors(outputs[0][:, 0, :]))
+        return np.concatenate(batches, axis=0)
     batches = []
     for start in range(0, len(texts), 16):
         batch = texts[start:start+16]
@@ -176,7 +235,7 @@ def load_or_build_index(chunks: list[Chunk], config: APIConfig, cache_dir: Path)
     """
     import faiss
     import numpy as np
-    identity = {"schema": 1, "url": config.base_url, "model": config.model,
+    identity = {"schema": 3, "backend": config.backend, "url": config.base_url, "model": config.model,
                 "chunks": [asdict(c) for c in chunks]}
     digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     folder = cache_dir / digest
@@ -238,7 +297,8 @@ def build_prompt(question: str, hits: list[dict], source: str) -> list[dict]:
         "这是单文件原型，不能确认其他系统的实时库存、最新版本或实际签收状态。"
         "不能补造数量、箱与份换算率、审批权限、截止时间或规则；缺依据就明确说资料不足。"
         "数量计算只允许依据已明确的数值和换算规则，并写明口径。"
-        "引用使用资料的[S编号]，只引用实际支持结论的片段；区分角色建议、演练事实与正式制度。"
+        "引用必须用半角方括号，如[S33][S3]；不得只写S33或（S33、S3）。"
+        "只引用实际支持结论的片段；区分角色建议、演练事实与正式制度。"
         "食品安全、医疗、应急调度和正式确认交由具备职责的人员处理。"
         "使用中文，按‘回答／依据／待确认事项’组织，不输出内部推理过程。"
     )
@@ -252,8 +312,19 @@ def build_prompt(question: str, hits: list[dict], source: str) -> list[dict]:
 
 def call_llm(messages: list[dict], config: APIConfig, *, transport=None) -> str:
     """【可复用核心】独立LLM函数；HTTP供应商、模型和密钥环境变量均可替换。"""
+    # 检索问答默认关闭DeepSeek长思考，避免预算先被推理耗尽而没有最终答案。
+    # 供应商专有字段只发给DeepSeek官方域名，切换供应商时不会误传。
+    max_tokens = int(os.getenv("LLM_MAX_TOKENS", "2048"))
+    if not 1 <= max_tokens <= 32768:
+        raise ValueError("LLM_MAX_TOKENS必须在1至32768之间")
+    payload = {"model": config.model, "messages": messages, "max_tokens": max_tokens}
+    if urlsplit(config.base_url).hostname == "api.deepseek.com":
+        thinking = os.getenv("LLM_THINKING", "disabled")
+        if thinking not in {"disabled", "enabled"}:
+            raise ValueError("LLM_THINKING必须为disabled或enabled")
+        payload["thinking"] = {"type": thinking}
     data = post_api(config, "/chat/completions",
-                    {"model": config.model, "messages": messages, "max_tokens": 1200}, transport=transport)
+                    payload, transport=transport)
     try:
         choice = data["choices"][0]
         answer = choice["message"]["content"]
@@ -319,8 +390,11 @@ def main() -> None:
     parser.add_argument("--cache-dir", type=Path, default=Path("work/rag_cache"))
     parser.add_argument("--chunk-size", type=int, default=500)
     parser.add_argument("--question", help="单次提问；不传则交互输入")
-    parser.add_argument("--retrieval-only", action="store_true", help="仅检索，仍需要向量API")
+    parser.add_argument("--retrieval-only", action="store_true", help="仅检索；local模式不需要密钥")
     parser.add_argument("--self-test", action="store_true", help="不联网的核心流程验证")
+    parser.add_argument("--embedding-backend", choices=["local", "api"], default="local",
+                        help="默认本地中文BGE；api保留原在线向量接入")
+    parser.add_argument("--device", choices=["auto", "cpu", "dml"], default="auto")
     args = parser.parse_args()
     if args.self_test:
         self_test(); return
@@ -331,8 +405,8 @@ def main() -> None:
     # 已有进程环境优先，文件不覆盖部署环境中的配置；绝不打印密钥。
     load_dotenv(args.env_file, override=False)
     embedding = APIConfig(os.getenv("EMBEDDING_BASE_URL", "https://openrouter.ai/api/v1"),
-                          os.getenv("EMBEDDING_MODEL", ""),
-                          os.getenv("EMBEDDING_API_KEY_ENV", "OPENROUTER_API_KEY"))
+                          os.getenv("EMBEDDING_MODEL", "Xenova/bge-small-zh-v1.5" if args.embedding_backend == "local" else ""),
+                          os.getenv("EMBEDDING_API_KEY_ENV", "OPENROUTER_API_KEY"), args.embedding_backend, args.device)
     llm = APIConfig(os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
                     os.getenv("LLM_MODEL", ""), os.getenv("LLM_API_KEY_ENV", "OPENROUTER_API_KEY"))
     embedding.validate()
@@ -340,7 +414,7 @@ def main() -> None:
         llm.validate()
         if not os.getenv(llm.key_env):
             raise ValueError(f"未配置 {llm.key_env}；尚不发起计费请求")
-    if not os.getenv(embedding.key_env):
+    if embedding.backend == "api" and not os.getenv(embedding.key_env):
         raise ValueError(f"未配置 {embedding.key_env}；向量API需要单独确认可用模型")
     if args.document.stat().st_size > 10*1024*1024:
         raise ValueError("原型只处理10MB以内的UTF-8 Markdown")
@@ -361,7 +435,7 @@ def main() -> None:
                 continue
             if len(question) > 2000:
                 raise ValueError("问题最长2000字符")
-            hits = hybrid_search(question, chunks, index, bm25, embed_texts([question], embedding))
+            hits = hybrid_search(question, chunks, index, bm25, embed_texts([question], embedding, is_query=True))
             print("\n检索来源（RRF为排序分数，不是置信度）：")
             for h in hits:
                 c = h["chunk"]
