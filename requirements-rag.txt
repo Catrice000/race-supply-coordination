@@ -1,0 +1,11 @@
+# 阶段1单文件原型；Python 3.10+。GPU向量编码，CPU FAISS检索。
+numpy==2.2.6
+faiss-cpu==1.15.1
+rank-bm25==0.2.2
+jieba==0.42.1
+httpx==0.28.1
+python-dotenv==1.2.4
+onnxruntime-directml==1.23.0; sys_platform == "win32"
+onnxruntime==1.23.0; sys_platform != "win32"
+tokenizers==0.23.3
+huggingface-hub==2.4.0
