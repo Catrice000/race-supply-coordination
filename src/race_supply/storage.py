@@ -14,8 +14,8 @@ import time
 
 
 def password_hash(password: str, salt: str | None = None) -> str:
-    if not 12 <= len(password) <= 256:
-        raise ValueError("密码需为12至256个字符")
+    if not 6 <= len(password) <= 256:
+        raise ValueError("密码需为6至256个字符")
     salt = salt or secrets.token_hex(16)
     value = hashlib.pbkdf2_hmac(
         "sha256", password.encode(), bytes.fromhex(salt), 600_000
@@ -113,7 +113,7 @@ class Store:
             ).fetchone()
         # 不存在的账户同样做密码派生，避免明显的时序枚举。
         expected = row["password_hash"] if row else "00" * 16 + ":" + "00" * 32
-        valid_length = 12 <= len(password) <= 256
+        valid_length = 6 <= len(password) <= 256
         actual = password_hash(
             password if valid_length else "invalid-password", expected.split(":")[0]
         )

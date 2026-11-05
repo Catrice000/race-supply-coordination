@@ -137,6 +137,11 @@ async function refreshDocuments() {
     }
 }
 async function enter(user) {
+    // 管理员默认进入运营工作台，显式选择聊天入口时才停留在聊天页。
+    if (user.role === "admin" && new URLSearchParams(location.search).get("view") !== "chat") {
+        location.replace("/admin/operations");
+        return;
+    }
     current = user;
     document.body.classList.add("is-authenticated");
     $("sidebar-toggle").hidden = false;
