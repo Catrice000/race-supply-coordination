@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from jinja2 import Environment,FileSystemLoader,select_autoescape
 from pydantic import Field
 
@@ -25,6 +25,10 @@ class Submission(Strict):
     confirmation_token: str = Field(min_length=1,max_length=100)
 
 
+class PreviewDecision(Strict):
+    confirmed: bool
+
+
 def register_agent(app,store,folder,user,admin,admin_data,searcher):
     service=AgentService(store,searcher)
     app.state.agent_service=service
@@ -39,10 +43,12 @@ def register_agent(app,store,folder,user,admin,admin_data,searcher):
     async def tool_specs(current=Depends(user)):
         return {"tools":TOOLS,"skills":SKILLS,"notice":"提交工具仅在界面人工确认后由服务端调用，不开放给模型。"}
 
-    @router.post("/agent/chat")
-    async def chat(body: AgentInput,current=Depends(user)):
+    def check_chat(body):
         if not body.question.strip():raise HTTPException(422,"问题不能为空")
         if app.state.chat_lock.locked():raise HTTPException(409,"当前模型正在处理请求，请稍后重试")
+
+    async def execute_chat(body,current):
+        check_chat(body)
         async with app.state.chat_lock:
             try:cid=await asyncio.to_thread(store.conversation,current["id"],body.session_id)
             except PermissionError:raise HTTPException(404,"会话不存在或无权访问") from None
@@ -64,13 +70,71 @@ def register_agent(app,store,folder,user,admin,admin_data,searcher):
                 if isinstance(error,AgentError):raise
                 raise HTTPException(503,"Agent未完成，请检查模型工具调用支持与本机配置；已执行步骤可查看运行记录，不自动重试") from None
 
+    @router.post("/agent/chat")
+    async def chat(body: AgentInput,current=Depends(user)):
+        # JSON 入口与 SSE 入口共用同一确认门禁。
+        return await execute_chat(body,current)
+
+    @router.post("/agent/chat/stream")
+    async def chat_stream(body: AgentInput,current=Depends(user)):
+        check_chat(body)
+
+        def frame(event,data):
+            return f"event: {event}\ndata: {json.dumps(data,ensure_ascii=False)}\n\n"
+
+        async def events():
+            yield frame("status",{"message":"Agent 正在检索资料并核对前置条件…"})
+            # 连接中断后让已开始的运行自行结束并释放锁。预览可在重连后恢复。
+            execution=asyncio.create_task(execute_chat(body,current))
+            # 即使浏览器断开，也消费异常，避免留下未读取的后台任务异常。
+            execution.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+            try:
+                while not execution.done():
+                    completed,_=await asyncio.wait({execution},timeout=10)
+                    if not completed:yield ": keepalive\n\n"
+                result=execution.result()
+            except AgentError as error:
+                yield frame("error",{"code":error.code,"message":error.message})
+                return
+            except HTTPException as error:
+                yield frame("error",{"code":f"HTTP_{error.status_code}","message":error.detail})
+                return
+            preview=result.pop("draft_preview")
+            if preview:
+                yield frame("draft_preview",preview)
+            yield frame("done",result)
+
+        return StreamingResponse(events(),media_type="text/event-stream",
+                                 headers={"Cache-Control":"no-store","X-Accel-Buffering":"no"})
+
+    @router.get("/agent/draft-previews")
+    async def pending_previews(current=Depends(user)):
+        return await asyncio.to_thread(service.pending_previews,current)
+
+    @router.post("/agent/draft-previews/{rid}/decision")
+    async def decide_preview(rid: str,body: PreviewDecision,current=Depends(user)):
+        return await asyncio.to_thread(service.decide_preview,rid,current,body.confirmed)
+
+    def round_rows(db,rid):
+        rows=db.execute("""SELECT round_no,model_ms,elapsed_ms,decision,tools,created
+                           FROM agent_round_audit WHERE run_id=? ORDER BY round_no""",(rid,))
+        return [{**r,"tools":json.loads(r["tools"])} for r in rows]
+
+    @router.get("/admin/agent/runs/{rid}/rounds")
+    async def admin_run_rounds(rid: str,current=Depends(admin)):
+        with store.connection() as db:
+            run=service.row(db,"SELECT id,status,prompt_version,created FROM agent_runs WHERE id=?",(rid,))
+            if not run:raise HTTPException(404,"运行不存在")
+            return {"run":run,"rounds":round_rows(db,rid)}
+
     @router.get("/agent/runs/{rid}")
     async def run_detail(rid: str,current=Depends(user)):
         with store.connection() as db:
             run=service.row(db,"SELECT * FROM agent_runs WHERE id=? AND user_id=?",(rid,current["id"]))
             if not run:raise HTTPException(404,"运行不存在或无权访问")
             trace=[dict(r) for r in db.execute("SELECT tool,args,result,created FROM agent_tool_audit WHERE run_id=? ORDER BY id",(rid,))]
-        return {"run":run,"trace":trace}
+            rounds=round_rows(db,rid)
+        return {"run":run,"trace":trace,"rounds":rounds}
 
     @router.get("/agent/runs")
     async def runs(current=Depends(user)):

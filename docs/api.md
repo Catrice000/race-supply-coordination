@@ -24,6 +24,19 @@
 
 配置详见[配置说明](../config/README.md)和[GPU运行说明](本地GPU运行说明.md)。
 
+## Agent 编排与确认
+
+| 接口 | 行为 |
+| --- | --- |
+| `POST /agent/chat/stream` | 接收 `{session_id, question, allow_draft}`。发送 `status`，需要建稿时发送 `draft_preview`，最后发送 `done` 或 `error` |
+| `POST /agent/chat` | JSON 兼容入口，暂停时返回 `draft_preview` |
+| `GET /agent/draft-previews` | 读取本人的有效待确认预览 |
+| `POST /agent/draft-previews/{run_id}/decision` | 接收 `{confirmed: true或false}`。确认后创建草稿，拒绝后结束该次待建稿 |
+| `GET /agent/runs/{run_id}` | 查看自己的运行、轮次和工具审计 |
+| `GET /admin/agent/runs/{run_id}/rounds` | 管理员查看指定运行的轮次摘要 |
+
+创建后仍通过原草稿确认与提交接口提交内部复核。预览与提交分别校验身份、有效期及规则版本。
+
 ## 早期内存业务演示
 
 导入模块：`race_supply.core.supplies`。

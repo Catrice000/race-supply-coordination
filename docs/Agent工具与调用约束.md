@@ -1,6 +1,6 @@
 # 赛事补给Agent：工具、状态机与使用说明
 
-在聊天页勾选“启用Agent工具”后，模型可以自主选择检索、读取批次、校验和查看草稿；仅勾选“仅检索”仍走原来的无对话API检索。Agent模式会调用配置的对话API，不自动重试。若需要创建草稿，每次提问前还需明确勾选“本次允许生成内部复核草稿”，发送后该授权复选框自动重置。
+在聊天页勾选“Agent 智能核对”后，模型可以自主选择检索、读取批次、校验和查看草稿；仅勾选“仅检索”仍走原来的无对话API检索。Agent模式会调用配置的对话API，不自动重试。若需要创建草稿，每次提问前还需明确勾选“本次允许展示草稿预览”，发送后该授权复选框自动重置。
 
 本机没有连接真实库存/配送系统。批次来自管理员导入的结构化快照，知识来自已发布资料。工具提交只产生内部`pending_review`记录，不执行正式调度、审批、库存写回或签收。
 
@@ -11,7 +11,7 @@
 | `search_knowledge` | query | 按当前用户权限检索有效知识；命中文档才能返回对应结构化规则快照 |
 | `get_batch_records` | batch_id、可选event_id/station_id | 仅返回授权批次；同编号对应多个站点/赛事时要求补充定位 |
 | `validate_batch` | record_snapshot_id、rule_snapshot_id | 本次运行先完成上述两次读取；规则需适用于该赛事/站点 |
-| `create_review_draft` | validation_id、draft_type、idempotency_key | 当前用户明确授权、有效校验允许该类草稿；幂等键由服务端运行编号确定 |
+| `create_review_draft` | validation_id、draft_type、idempotency_key | 当前员工开启预览、有效校验允许该类草稿。预览后需员工确认才创建，幂等键绑定本次运行 |
 | `get_draft` | draft_id | 仅查看本人草稿及真实状态 |
 | `submit_for_review` | draft_id、confirmation_token | 不提供给模型；仅在界面人工确认后由后端执行对应提交逻辑 |
 
@@ -19,9 +19,9 @@
 
 1. `knowledge_qa`：检索→有来源的回答/说明资料不足。
 2. `batch_check`：检索规则＋读取批次→确定性校验→差异/缺项结果。
-3. `receipt_review`：批次核对→用户明确允许→创建并查看草稿→界面人工确认→内部人工复核队列。
+3. `receipt_review`：批次核对 → SSE 预览 → 员工确认创建草稿 → 另行确认提交 → 内部人工复核队列。
 
-编排器最多6轮模型决策、12次工具调用；同轮最多4次调用，后端按顺序逐项校验。模型自由文本不会被当成业务操作成功依据。知识问答的最终JSON结论仍需通过来源与原文摘录校验；批次核对与草稿状态由工具真实结果渲染。
+编排器最多5轮模型决策、12次工具调用；同轮最多4次调用，后端按顺序逐项校验。模型自由文本不会被当成业务操作成功依据。知识问答的最终JSON结论仍需通过来源与原文摘录校验；批次核对与草稿状态由工具真实结果渲染。
 
 ## 管理员准备数据
 
@@ -88,7 +88,10 @@ search_knowledge + get_batch_records
 
 ## 接口与运行记录
 
-- `POST /agent/chat`：`{session_id, question, allow_draft}`，返回回答、来源、工具轨迹、草稿ID与运行ID。当前Agent入口为一次JSON结果；原`POST /chat`继续提供SSE问答。
+- `POST /agent/chat`：`{session_id, question, allow_draft}`，返回回答、来源、工具轨迹、草稿ID与运行ID。JSON 兼容入口。需要人工确认时返回 `draft_preview`，草稿列表为空。
+- `POST /agent/chat/stream` 提供 SSE，事件为 `status`、`draft_preview`、`done` 或 `error`。
+- `GET /agent/draft-previews` 恢复待确认预览，`POST /agent/draft-previews/{id}/decision` 接收 `{confirmed}`。
+- `GET /admin/agent/runs/{id}/rounds` 提供管理员轮次审计。
 - `GET /agent/runs`、`GET /agent/runs/{id}`：本人运行与工具记录。失败不自动重放，先检查草稿列表，避免创建新运行导致重复业务意图。
 - `GET /agent/drafts`、`GET /agent/drafts/{id}`：本人草稿及状态。
 - 确认、提交接口如上；普通错误包含code和中文message。
@@ -101,4 +104,4 @@ search_knowledge + get_batch_records
 
 回归测试覆盖越权、跳过读取、伪造校验、缺少换算、版本失效、幂等、赛事/站点歧义、过期凭证、模型直接提交及一次性人工确认。浏览器完成Agent勾选→工具调用轨迹→草稿查看→人工确认→待复核状态验证，使用脚本模型替身，不调用对话API。
 
-Function Calling已按现有OpenAI兼容API接入，模型供应商沿用现有配置。后续已补充DeepSeek真实模型测试：实际完成检索、读取批次、校验、生成草稿四步，详见[真实模型运行验证](真实模型运行验证.md)。脚本模型回归与单次真实调用都不能等同于全面的Agent准确率评测。
+Function Calling已按现有OpenAI兼容API接入，模型供应商沿用现有配置。提示词 6 曾使用 DeepSeek 完成检索、读取批次、校验和建稿验证，现行流程在建稿前增加 SSE 预览确认，详见[真实模型运行验证](真实模型运行验证.md)。脚本模型回归与单次真实调用都不能等同于全面的Agent准确率评测。

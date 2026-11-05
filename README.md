@@ -8,7 +8,7 @@
 
 ## Web启动
 
-聊天页已增加可选Agent模式，支持自主选择工具、批次核对和内部复核草稿；管理员在`/admin/agent`导入批次快照与确认过的结构化规则。建草稿需每次明确授权，提交需在界面人工确认。详见[Agent工具与调用约束](docs/Agent工具与调用约束.md)。
+聊天页已增加可选Agent模式，支持自主选择工具、批次核对和内部复核草稿；管理员在`/admin/agent`导入批次快照与确认过的结构化规则。勾选草稿预览后，员工先在聊天页确认创建，再单独确认提交人工复核。详见[Agent工具与调用约束](docs/Agent工具与调用约束.md)。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -55,12 +55,17 @@ race-supply-coordination/
 ├── .env.example                      # 无真实密钥的配置模板
 ├── src/race_supply/
 │   ├── __init__.py
+│   ├── web.py                        # FastAPI Web 入口
+│   ├── agent.py                      # Harness、工具、审计与暂停恢复
+│   ├── agent_api.py                  # SSE 与确认接口
 │   ├── main.py                       # 早期内存演示入口
 │   ├── phase1_rag.py                 # 当前单文件问答原型与可复用核心
 │   ├── core/supplies.py              # 早期需求、派单、签收演示逻辑
 │   └── utils/validation.py           # 通用校验
 ├── docs/
 │   ├── README.md                     # 全部文档导航
+│   ├── Agent编排与评测.md
+│   ├── 上线前检查清单.md
 │   ├── 架构方案.md
 │   ├── 本地GPU运行说明.md
 │   ├── 业务现状.jpg
@@ -73,7 +78,9 @@ race-supply-coordination/
 │   ├── requirements.md
 │   ├── design.md
 │   └── api.md
-├── tests/test_core.py                # 业务测试；RAG自检位于原型文件
+├── tests/
+│   ├── test_agent.py                 # Agent 门禁及接口回归
+│   └── fixtures/agent_cases.json     # 30 条评测用例
 ├── examples/
 │   ├── demo.py                       # 早期CSV业务演示
 │   └── rag_demo.py                   # 调用src原型的检索示例

@@ -38,7 +38,9 @@ class AgentTests(unittest.TestCase):
         return self.call('validate_batch',{'record_snapshot_id':self.bs,'rule_snapshot_id':self.rs})
     def draft(self):
         result=self.validate()
-        return self.call('create_review_draft',{'validation_id':result['validation_id'],'draft_type':'receipt_discrepancy','idempotency_key':'run:'+self.rid})
+        preview=self.call('create_review_draft',{'validation_id':result['validation_id'],'draft_type':'receipt_discrepancy','idempotency_key':'run:'+self.rid})
+        if 'error' in preview:return preview
+        return self.service.decide_preview(self.rid,self.user,True)
 
     def test_tools_have_strict_object_schemas(self):
         self.assertEqual(6,len(TOOLS))
@@ -82,8 +84,25 @@ class AgentTests(unittest.TestCase):
 
     def test_idempotent_creation(self):
         v=self.validate();args={'validation_id':v['validation_id'],'draft_type':'receipt_discrepancy','idempotency_key':'run:'+self.rid}
-        a=self.call('create_review_draft',args);b=self.call('create_review_draft',args)
+        preview=self.call('create_review_draft',args)
+        self.assertEqual('awaiting_confirmation',preview['state'])
+        with self.store.connection() as db:
+            self.assertEqual(0,db.execute('SELECT count(*) FROM review_drafts').fetchone()[0])
+        a=self.service.decide_preview(self.rid,self.user,True)
+        b=self.service.decide_preview(self.rid,self.user,True)
         self.assertEqual(a['draft_id'],b['draft_id']);self.assertTrue(b['reused'])
+
+    def test_preview_rechecks_versions_after_pause(self):
+        v=self.validate()
+        self.call('create_review_draft',{'validation_id':v['validation_id'],'draft_type':'receipt_discrepancy','idempotency_key':'run:'+self.rid})
+        self.service.import_batch(self.batch,self.admin_user)
+        with self.assertRaisesRegex(AgentError,'版本已更新'):
+            self.service.decide_preview(self.rid,self.user,True)
+        self.assertEqual('rejected',self.service.decide_preview(self.rid,self.user,False)['state'])
+        with self.assertRaises(AgentError):
+            self.service.decide_preview(self.rid,self.user,True)
+        with self.store.connection() as db:
+            self.assertEqual(0,db.execute('SELECT count(*) FROM review_drafts').fetchone()[0])
 
     def test_new_batch_invalidates_old_validation(self):
         v=self.validate();self.service.import_batch(self.batch,self.admin_user)
@@ -134,9 +153,24 @@ class AgentTests(unittest.TestCase):
             else:return {'content':'模型无法伪造已提交状态'}
             return {'tool_calls':[{'id':str(index),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}
         self.app.state.agent_step=step
-        response=self.alice.post('/agent/chat',json={'question':'核对B001并生成复核草稿','allow_draft':True})
+        response=self.alice.post('/agent/chat/stream',json={'question':'核对B001并生成复核草稿','allow_draft':True})
         self.assertEqual(200,response.status_code,response.text)
-        did=response.json()['draft_ids'][0]
+        frames={event:json.loads(data[6:]) for event,data in (f.split('\n') for f in response.text.strip().split('\n\n'))}
+        preview=frames['event: draft_preview']
+        rid=preview['run_id']
+        self.assertEqual('24',preview['content']['totals']['water']['outbound'])
+        self.assertEqual(4,steps[0])
+        self.assertEqual([],self.alice.get('/agent/drafts').json())
+        self.assertEqual(rid,self.alice.get('/agent/draft-previews').json()[0]['run_id'])
+        self.assertEqual([],self.bob.get('/agent/draft-previews').json())
+        path=f'/agent/draft-previews/{rid}/decision'
+        self.assertEqual(422,self.bob.post(path,json={'confirmed':True}).status_code)
+        self.assertEqual(403,self.alice.get(f'/admin/agent/runs/{rid}/rounds').status_code)
+        rounds=self.admin.get(f'/admin/agent/runs/{rid}/rounds').json()['rounds']
+        self.assertEqual([1,2,3,4],[r['round_no'] for r in rounds])
+        self.assertEqual('awaiting_confirmation',rounds[-1]['decision'])
+        self.assertEqual({'length':4},rounds[0]['tools'][0]['args']['query'])
+        did=self.alice.post(path,json={'confirmed':True}).json()['draft_id']
         self.assertEqual(422,self.alice.post(f'/agent/drafts/{did}/confirmation',json={'confirmed':False}).status_code)
         token=self.alice.post(f'/agent/drafts/{did}/confirmation',json={'confirmed':True}).json()['confirmation_token']
         self.assertEqual('pending_review',self.alice.post(f'/agent/drafts/{did}/submit',json={'confirmation_token':token}).json()['state'])
@@ -158,7 +192,10 @@ class AgentTests(unittest.TestCase):
             return {'tool_calls':[{'id':'repeat','type':'function','function':{'name':'get_batch_records','arguments':'{"batch_id":"B001"}'}}]}
         result=run_agent(self.service,self.user,self.cid,'查询批次',False,{'id':1,'content':'只读'},step=step)
         self.assertEqual('limited',result['status'])
-        self.assertEqual(6,len(result['trace']))
+        self.assertEqual(5,len(result['trace']))
+        rounds=self.alice.get('/agent/runs/'+result['run_id']).json()['rounds']
+        self.assertEqual(5,len(rounds))
+        self.assertEqual('limited',rounds[-1]['decision'])
 
     def test_function_call_transport(self):
         from unittest.mock import patch
