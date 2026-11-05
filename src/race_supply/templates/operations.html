@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>赛事运营工作台</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/admin.css">
+<link rel="stylesheet" href="/static/workspace.css">
+<script src="/static/operations.js" defer>
+</script>
+</head>
+<body class="ops-body">
+<div class="ops-shell">
+<aside class="ops-sidebar">
+<a class="ops-brand" href="/admin/operations">
+<span class="brand-mark" aria-hidden="true">补</span>
+<span>赛事补给<span class="brand-caption">运营工作台</span>
+</span>
+</a>
+<p class="nav-group">赛事协同</p>
+<nav aria-label="运营工作台导航" id="ops-nav">
+<button data-page="overview" aria-current="page">运营总览</button>
+<button data-page="events">赛事与站点</button>
+<button data-page="materials">物资目录</button>
+<button data-page="ledger">交接台账</button>
+<button data-page="reviews">差异复核</button>
+<button data-page="changes">操作记录</button>
+</nav>
+<p class="nav-group">知识与协作</p>
+<nav aria-label="知识管理">
+<a href="/admin/knowledge">知识库与版本</a>
+<a href="/admin/prompt-editor">问答规则</a>
+<a href="/admin/audit">对话审计</a>
+<a href="/admin/agent">批次快照与换算</a>
+<a href="/">员工聊天入口</a>
+</nav>
+<div class="ops-user">
+<span class="user-avatar" aria-hidden="true">管</span>
+<div>{{ current.username }}<small>管理员</small>
+</div>
+</div>
+</aside>
+<main class="ops-main">
+<header class="ops-topbar">
+<div>
+<span class="ops-breadcrumb">赛事补给协同 / 管理工作台</span>
+<h1 id="page-title">运营总览</h1>
+</div>
+<button id="refresh-ops" class="secondary">刷新数据</button>
+</header>
+<div id="ops-notice" role="status" aria-live="polite">
+</div>
+<section id="page-overview" class="ops-page">
+<div class="ops-welcome">
+<div>
+<h2>每一站，都有据可查。</h2>
+<p>从物资准备到站点签收，集中查看本机台账与待复核事项。</p>
+<button data-open-page="ledger">登记交接记录</button>
+</div>
+<div class="route-symbol" aria-hidden="true">
+<span>物资准备</span>
+<i>
+</i>
+<span>出库交接</span>
+<i>
+</i>
+<span>站点签收</span>
+</div>
+</div>
+<div class="ops-metrics" id="overview-counts">
+</div>
+<div class="ops-two-columns">
+<section class="ops-panel">
+<div class="panel-heading">
+<h2>物资交接汇总</h2>
+<span class="subtle">按原始单位分别统计</span>
+</div>
+<div class="table-scroll" id="overview-totals">
+</div>
+</section>
+<section class="ops-panel">
+<div class="panel-heading">
+<h2>最近操作</h2>
+</div>
+<ol class="activity-list" id="overview-activity">
+</ol>
+</section>
+</div>
+</section>
+<section id="page-events" class="ops-page" hidden>
+<div class="section-toolbar">
+<p>建立赛事与站点，为员工配置可查询的站点范围。</p>
+<button data-new="event">新增赛事</button>
+</div>
+<div id="events-list" class="event-grid">
+</div>
+<section class="ops-panel">
+<div class="panel-heading">
+<h2>站点档案</h2>
+<button data-new="station">新增站点</button>
+</div>
+<div class="table-scroll" id="stations-table">
+</div>
+</section>
+</section>
+<section id="page-materials" class="ops-page" hidden>
+<section class="ops-panel">
+<div class="panel-heading">
+<h2>物资目录</h2>
+<button data-new="material">新增物资</button>
+</div>
+<p class="subtle">编号和基准单位创建后固定，箱、袋等单位的换算依据在规则库维护。</p>
+<div class="table-scroll" id="materials-table">
+</div>
+</section>
+</section>
+<section id="page-ledger" class="ops-page" hidden>
+<section class="ops-panel">
+<div class="panel-heading">
+<h2>需求、出库、签收与余料回收</h2>
+<button data-new="ledger">登记记录</button>
+</div>
+<form id="ledger-filter" class="ops-filter">
+<label>赛事<select name="event_id" id="filter-event">
+<option value="">全部赛事</option>
+</select>
+</label>
+<label>类型<select name="kind">
+<option value="">全部类型</option>
+<option value="demand">需求</option>
+<option value="outbound">出库</option>
+<option value="receipt">签收</option>
+<option value="return">余料回收</option>
+</select>
+</label>
+<label>搜索<input name="query" placeholder="批次、记录编号或物资" maxlength="100">
+</label>
+<button class="secondary">查询</button>
+</form>
+<div class="table-scroll" id="ledger-table">
+</div>
+<div id="ledger-pager" class="pagination">
+</div>
+</section>
+<div class="ops-two-columns">
+<section class="ops-panel">
+<h2>批量导入与导出</h2>
+<p>先下载 CSV 模板。最多500条，编号相同且内容一致的记录会自动跳过。</p>
+<div class="button-row">
+<a class="button-link secondary" href="/admin/operations/ledger-template.csv">下载模板</a>
+<a class="button-link secondary" id="export-ledger" href="/admin/operations/export.csv">导出台账</a>
+</div>
+<form id="csv-import" class="stack-form">
+<label>UTF-8 CSV 文件<input type="file" name="file" accept=".csv" required>
+</label>
+<button>验证并导入</button>
+</form>
+</section>
+<section class="ops-panel">
+<h2>发布批次供员工核对</h2>
+<p>核对台账和站点授权后，将需求、出库、签收记录发布为可查询快照。</p>
+<form id="publish-batch" class="stack-form">
+<label>站点<select id="publish-station" name="station_id" required>
+</select>
+</label>
+<label>批次编号<input name="batch_code" required maxlength="60">
+</label>
+<label class="check-label">
+<input type="checkbox" name="confirmed" required> 已核对记录及员工授权范围</label>
+<button>确认发布快照</button>
+</form>
+</section>
+</div>
+</section>
+<section id="page-reviews" class="ops-page" hidden>
+<section class="ops-panel">
+<div class="panel-heading">
+<h2>内部差异复核</h2>
+<label>状态<select id="review-state">
+<option value="pending_review">待复核</option>
+<option value="needs_information">待补充</option>
+<option value="resolved">已完成</option>
+<option value="draft">未提交草稿</option>
+<option value="">全部</option>
+</select>
+</label>
+</div>
+<p class="subtle">记录复核结论。需要补充的事项由员工补齐依据后重新发起核对。</p>
+<div id="reviews-list">
+</div>
+</section>
+</section>
+<section id="page-changes" class="ops-page" hidden>
+<section class="ops-panel">
+<div class="panel-heading">
+<h2>台账变更记录</h2>
+</div>
+<p class="subtle">保留操作者、时间和变更前后内容，支持逐条追溯。</p>
+<div class="table-scroll" id="changes-table">
+</div>
+<div id="changes-pager" class="pagination">
+</div>
+</section>
+</section>
+<footer class="ops-footer">本机协同台账 · 规则和数量以已核对的原始记录为依据</footer>
+</main>
+</div>
+<dialog id="edit-dialog" aria-labelledby="dialog-title">
+<form id="entity-form" class="stack-form">
+<div class="panel-heading">
+<h2 id="dialog-title">新增记录</h2>
+<button type="button" class="secondary" id="close-dialog" aria-label="关闭表单">关闭</button>
+</div>
+<p id="form-help" class="subtle">
+</p>
+<div id="entity-fields" class="field-grid">
+</div>
+<p id="form-error" role="alert">
+</p>
+<div class="dialog-actions">
+<button id="save-entity">保存记录</button>
+</div>
+</form>
+</dialog>
+</body>
+</html>

@@ -33,10 +33,14 @@ def create_request(station: str, item: str, quantity: int) -> SupplyRequest:
 def assign_request(request: SupplyRequest, courier: str) -> SupplyRequest:
     if request.status != Status.PENDING:
         raise ValueError("仅待调度的需求可以派单")
-    return replace(request, courier=require_text(courier, "配送人员"), status=Status.ASSIGNED)
+    return replace(
+        request, courier=require_text(courier, "配送人员"), status=Status.ASSIGNED
+    )
 
 
 def confirm_receipt(request: SupplyRequest, receiver: str) -> SupplyRequest:
     if request.status != Status.ASSIGNED:
         raise ValueError("仅已派单的需求可以签收")
-    return replace(request, receiver=require_text(receiver, "签收人员"), status=Status.RECEIVED)
+    return replace(
+        request, receiver=require_text(receiver, "签收人员"), status=Status.RECEIVED
+    )

@@ -15,7 +15,9 @@ def main() -> None:
         parser.print_help()
         return
     request = create_request("演示站点A", "饮用水（箱）", 10)
-    print(f"{request.station}：{request.item} × {request.quantity}，{request.status.value}")
+    print(
+        f"{request.station}：{request.item} × {request.quantity}，{request.status.value}"
+    )
     request = assign_request(request, "演示配送员")
     print(f"{request.status.value}：配送人员 {request.courier}")
     request = confirm_receipt(request, "演示站点负责人")

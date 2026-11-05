@@ -17,7 +17,9 @@ def password_hash(password: str, salt: str | None = None) -> str:
     if not 12 <= len(password) <= 256:
         raise ValueError("密码需为12至256个字符")
     salt = salt or secrets.token_hex(16)
-    value = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 600_000)
+    value = hashlib.pbkdf2_hmac(
+        "sha256", password.encode(), bytes.fromhex(salt), 600_000
+    )
     return salt + ":" + value.hex()
 
 
@@ -51,14 +53,22 @@ class Store:
                 id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
                 action TEXT NOT NULL, target TEXT NOT NULL, created REAL NOT NULL);
             """)
-            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS shared_versions ON documents(series,version) WHERE scope='shared'")
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS shared_versions ON documents(series,version) WHERE scope='shared'"
+            )
             # 可重复的兼容迁移，已有本机数据不丢失。
-            for name, definition in [("deleted","INTEGER NOT NULL DEFAULT 0"),
-                                     ("processing","TEXT NOT NULL DEFAULT 'ready'"),
-                                     ("filename","TEXT NOT NULL DEFAULT ''")]:
-                if name not in {r[1] for r in db.execute("PRAGMA table_info(documents)")}:
+            for name, definition in [
+                ("deleted", "INTEGER NOT NULL DEFAULT 0"),
+                ("processing", "TEXT NOT NULL DEFAULT 'ready'"),
+                ("filename", "TEXT NOT NULL DEFAULT ''"),
+            ]:
+                if name not in {
+                    r[1] for r in db.execute("PRAGMA table_info(documents)")
+                }:
                     db.execute(f"ALTER TABLE documents ADD COLUMN {name} {definition}")
-            if "prompt_version" not in {r[1] for r in db.execute("PRAGMA table_info(messages)")}:
+            if "prompt_version" not in {
+                r[1] for r in db.execute("PRAGMA table_info(messages)")
+            }:
                 db.execute("ALTER TABLE messages ADD COLUMN prompt_version INTEGER")
 
     @contextmanager
@@ -74,113 +84,206 @@ class Store:
 
     def create_user(self, username: str, password: str, role: str):
         import re
-        if not re.fullmatch(r"[A-Za-z0-9_.-]{3,64}", username) or role not in {"employee","admin"}:
+
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{3,64}", username) or role not in {
+            "employee",
+            "admin",
+        }:
             raise ValueError("用户名需为3至64位字母、数字或_.-；角色无效")
         value = password_hash(password)
         with self.connection() as db:
-            return db.execute("INSERT INTO users(username,password_hash,role) VALUES(?,?,?)",
-                              (username,value,role)).lastrowid
+            return db.execute(
+                "INSERT INTO users(username,password_hash,role) VALUES(?,?,?)",
+                (username, value, role),
+            ).lastrowid
 
     def login(self, username: str, password: str, ip: str):
         now = time.time()
         with self.connection() as db:
-            db.execute("DELETE FROM login_attempts WHERE at < ?", (now-300,))
-            count = db.execute("SELECT count(*) FROM login_attempts WHERE username=? OR ip=?",(username,ip)).fetchone()[0]
+            db.execute("DELETE FROM login_attempts WHERE at < ?", (now - 300,))
+            count = db.execute(
+                "SELECT count(*) FROM login_attempts WHERE username=? OR ip=?",
+                (username, ip),
+            ).fetchone()[0]
             if count >= 10:
                 raise ValueError("尝试过多，请5分钟后再试")
-            db.execute("INSERT INTO login_attempts VALUES(?,?,?)",(username,ip,now))
-            row = db.execute("SELECT * FROM users WHERE username=?",(username,)).fetchone()
+            db.execute("INSERT INTO login_attempts VALUES(?,?,?)", (username, ip, now))
+            row = db.execute(
+                "SELECT * FROM users WHERE username=?", (username,)
+            ).fetchone()
         # 不存在的账户同样做密码派生，避免明显的时序枚举。
-        expected = row["password_hash"] if row else "00"*16 + ":" + "00"*32
-        valid_length=12 <= len(password) <= 256
-        actual = password_hash(password if valid_length else "invalid-password", expected.split(":")[0])
-        if not row or not valid_length or not hmac.compare_digest(actual,expected):
+        expected = row["password_hash"] if row else "00" * 16 + ":" + "00" * 32
+        valid_length = 12 <= len(password) <= 256
+        actual = password_hash(
+            password if valid_length else "invalid-password", expected.split(":")[0]
+        )
+        if not row or not valid_length or not hmac.compare_digest(actual, expected):
             raise PermissionError("用户名或密码错误")
         token = secrets.token_urlsafe(32)
         with self.connection() as db:
-            db.execute("DELETE FROM sessions WHERE expires < ?",(now,))
-            db.execute("INSERT INTO sessions VALUES(?,?,?)",(hashlib.sha256(token.encode()).hexdigest(),row["id"],now+8*3600))
-        return token, {k:row[k] for k in ("id","username","role")}
+            db.execute("DELETE FROM sessions WHERE expires < ?", (now,))
+            db.execute(
+                "INSERT INTO sessions VALUES(?,?,?)",
+                (hashlib.sha256(token.encode()).hexdigest(), row["id"], now + 8 * 3600),
+            )
+        return token, {k: row[k] for k in ("id", "username", "role")}
 
     def user_for_token(self, token: str):
         with self.connection() as db:
-            row=db.execute("SELECT u.id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=? AND expires>?",
-                           (hashlib.sha256(token.encode()).hexdigest(),time.time())).fetchone()
+            row = db.execute(
+                "SELECT u.id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=? AND expires>?",
+                (hashlib.sha256(token.encode()).hexdigest(), time.time()),
+            ).fetchone()
         return dict(row) if row else None
 
     def logout(self, token: str):
         with self.connection() as db:
-            db.execute("DELETE FROM sessions WHERE token_hash=?",(hashlib.sha256(token.encode()).hexdigest(),))
+            db.execute(
+                "DELETE FROM sessions WHERE token_hash=?",
+                (hashlib.sha256(token.encode()).hexdigest(),),
+            )
 
     def audit(self, user_id: int, action: str, target: str):
         with self.connection() as db:
-            db.execute("INSERT INTO audit(user_id,action,target,created) VALUES(?,?,?,?)",(user_id,action,target,time.time()))
+            db.execute(
+                "INSERT INTO audit(user_id,action,target,created) VALUES(?,?,?,?)",
+                (user_id, action, target, time.time()),
+            )
 
     def add_document(self, uid, title, series, scope, kind, content):
         with self.connection() as db:
             # IMMEDIATE避免同一系列并发上传计算出重复版本号。
             db.execute("BEGIN IMMEDIATE")
-            count=db.execute("SELECT count(*) FROM documents WHERE owner_id=?",(uid,)).fetchone()[0]
-            if count>=100:
+            count = db.execute(
+                "SELECT count(*) FROM documents WHERE owner_id=?", (uid,)
+            ).fetchone()[0]
+            if count >= 100:
                 raise ValueError("本机试点每人最多100份文档")
-            if scope=="shared":
-                version=db.execute("SELECT coalesce(max(version),0)+1 FROM documents WHERE scope='shared' AND series=?",(series,)).fetchone()[0]
+            if scope == "shared":
+                version = db.execute(
+                    "SELECT coalesce(max(version),0)+1 FROM documents WHERE scope='shared' AND series=?",
+                    (series,),
+                ).fetchone()[0]
             else:
-                version=db.execute("SELECT coalesce(max(version),0)+1 FROM documents WHERE owner_id=? AND scope=? AND series=?",(uid,scope,series)).fetchone()[0]
-                db.execute("UPDATE documents SET status='archived' WHERE owner_id=? AND scope='personal' AND series=?",(uid,series))
-            return db.execute("INSERT INTO documents(owner_id,title,series,version,scope,status,kind,content,created) VALUES(?,?,?,?,?,'draft',?,?,?)",
-                              (uid,title,series,version,scope,kind,content,time.time())).lastrowid
+                version = db.execute(
+                    "SELECT coalesce(max(version),0)+1 FROM documents WHERE owner_id=? AND scope=? AND series=?",
+                    (uid, scope, series),
+                ).fetchone()[0]
+                db.execute(
+                    "UPDATE documents SET status='archived' WHERE owner_id=? AND scope='personal' AND series=?",
+                    (uid, series),
+                )
+            return db.execute(
+                "INSERT INTO documents(owner_id,title,series,version,scope,status,kind,content,created) VALUES(?,?,?,?,?,'draft',?,?,?)",
+                (uid, title, series, version, scope, kind, content, time.time()),
+            ).lastrowid
 
     def documents(self, user, *, chat_only=False):
         with self.connection() as db:
-            rows=db.execute("SELECT * FROM documents WHERE deleted=0 ORDER BY id DESC").fetchall()
+            rows = db.execute(
+                "SELECT * FROM documents WHERE deleted=0 ORDER BY id DESC"
+            ).fetchall()
+
         def visible(d):
             if chat_only:
-                return (d["scope"]=="personal" and d["owner_id"]==user["id"] and d["status"]!="archived") or (d["scope"]=="shared" and d["status"]=="published")
-            return user["role"]=="admin" or (d["scope"]=="personal" and d["owner_id"]==user["id"]) or (d["scope"]=="shared" and d["status"]=="published")
+                return (
+                    d["scope"] == "personal"
+                    and d["owner_id"] == user["id"]
+                    and d["status"] != "archived"
+                ) or (d["scope"] == "shared" and d["status"] == "published")
+            return (
+                user["role"] == "admin"
+                or (d["scope"] == "personal" and d["owner_id"] == user["id"])
+                or (d["scope"] == "shared" and d["status"] == "published")
+            )
+
         return [dict(d) for d in rows if visible(d)]
 
     def change_status(self, doc_id: int, status: str):
-        if status not in {"published","archived"}:
+        if status not in {"published", "archived"}:
             raise ValueError("文档状态无效")
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            row=db.execute("SELECT * FROM documents WHERE id=? AND deleted=0",(doc_id,)).fetchone()
-            if not row or row["scope"]!="shared":
+            row = db.execute(
+                "SELECT * FROM documents WHERE id=? AND deleted=0", (doc_id,)
+            ).fetchone()
+            if not row or row["scope"] != "shared":
                 raise ValueError("共享文档不存在")
-            if status=="published":
-                if row["processing"]!="ready":
+            if status == "published":
+                if row["processing"] != "ready":
                     raise ValueError("资料尚未成功完成向量化，不能发布")
-                if row["status"]!="draft":
+                if row["status"] != "draft":
                     raise ValueError("仅草稿可发布；已归档版本不得重新生效")
-                newer=db.execute("SELECT 1 FROM documents WHERE scope='shared' AND series=? AND version>? AND status='published'",(row["series"],row["version"])).fetchone()
+                newer = db.execute(
+                    "SELECT 1 FROM documents WHERE scope='shared' AND series=? AND version>? AND status='published'",
+                    (row["series"], row["version"]),
+                ).fetchone()
                 if newer:
                     raise ValueError("已有更高版本生效，不能发布旧版")
-                db.execute("UPDATE documents SET status='archived' WHERE scope='shared' AND series=? AND status='published'",(row["series"],))
-            db.execute("UPDATE documents SET status=?,published=? WHERE id=?",(status,time.time(),doc_id))
+                db.execute(
+                    "UPDATE documents SET status='archived' WHERE scope='shared' AND series=? AND status='published'",
+                    (row["series"],),
+                )
+            db.execute(
+                "UPDATE documents SET status=?,published=? WHERE id=?",
+                (status, time.time(), doc_id),
+            )
 
     def conversation(self, uid, conversation_id=None):
         with self.connection() as db:
             if conversation_id is None:
-                return db.execute("INSERT INTO conversations(user_id,created) VALUES(?,?)",(uid,time.time())).lastrowid
-            row=db.execute("SELECT id FROM conversations WHERE id=? AND user_id=?",(conversation_id,uid)).fetchone()
+                return db.execute(
+                    "INSERT INTO conversations(user_id,created) VALUES(?,?)",
+                    (uid, time.time()),
+                ).lastrowid
+            row = db.execute(
+                "SELECT id FROM conversations WHERE id=? AND user_id=?",
+                (conversation_id, uid),
+            ).fetchone()
             if not row:
                 raise PermissionError("会话不存在或无权访问")
             return row["id"]
 
     def add_message(self, cid, role, content, sources="[]", prompt_version=None):
         with self.connection() as db:
-            return db.execute("INSERT INTO messages(conversation_id,role,content,sources,created,prompt_version) VALUES(?,?,?,?,?,?)",(cid,role,content,sources,time.time(),prompt_version)).lastrowid
+            return db.execute(
+                "INSERT INTO messages(conversation_id,role,content,sources,created,prompt_version) VALUES(?,?,?,?,?,?)",
+                (cid, role, content, sources, time.time(), prompt_version),
+            ).lastrowid
 
     def messages(self, cid):
         with self.connection() as db:
-            return [dict(r) for r in db.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY id LIMIT 1000",(cid,))]
+            return [
+                dict(r)
+                for r in db.execute(
+                    "SELECT * FROM messages WHERE conversation_id=? ORDER BY id LIMIT 1000",
+                    (cid,),
+                )
+            ]
 
     def conversations(self, user):
         with self.connection() as db:
-            return [dict(r) for r in db.execute("SELECT id,created FROM conversations WHERE user_id=? ORDER BY id DESC LIMIT 100",(user["id"],))]
+            return [
+                dict(r)
+                for r in db.execute(
+                    "SELECT id,created FROM conversations WHERE user_id=? ORDER BY id DESC LIMIT 100",
+                    (user["id"],),
+                )
+            ]
 
     def logs(self):
         with self.connection() as db:
-            return {"messages":[dict(r) for r in db.execute("SELECT m.*,c.user_id FROM messages m JOIN conversations c ON c.id=m.conversation_id ORDER BY m.id DESC LIMIT 200")],
-                    "audit":[dict(r) for r in db.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 200")]}
+            return {
+                "messages": [
+                    dict(r)
+                    for r in db.execute(
+                        "SELECT m.*,c.user_id FROM messages m JOIN conversations c ON c.id=m.conversation_id ORDER BY m.id DESC LIMIT 200"
+                    )
+                ],
+                "audit": [
+                    dict(r)
+                    for r in db.execute(
+                        "SELECT * FROM audit ORDER BY id DESC LIMIT 200"
+                    )
+                ],
+            }

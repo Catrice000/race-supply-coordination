@@ -2,7 +2,12 @@
 
 import unittest
 
-from race_supply.core.supplies import Status, assign_request, confirm_receipt, create_request
+from race_supply.core.supplies import (
+    Status,
+    assign_request,
+    confirm_receipt,
+    create_request,
+)
 
 
 class SupplyFlowTests(unittest.TestCase):
@@ -23,7 +28,10 @@ class SupplyFlowTests(unittest.TestCase):
 
     def test_required_text(self):
         for station, item in ((" ", "水"), ("A站", ""), (None, "水")):
-            with self.subTest(station=station, item=item), self.assertRaises(ValueError):
+            with (
+                self.subTest(station=station, item=item),
+                self.assertRaises(ValueError),
+            ):
                 create_request(station, item, 10)
         request = create_request("A站", "水", 10)
         with self.assertRaises(ValueError):

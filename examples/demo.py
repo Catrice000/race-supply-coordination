@@ -13,7 +13,9 @@ def main() -> None:
             request = create_request(row["station"], row["item"], int(row["quantity"]))
             request = assign_request(request, row["courier"])
             request = confirm_receipt(request, row["receiver"])
-            print(f"{request.station} | {request.item} × {request.quantity} | {request.status.value}")
+            print(
+                f"{request.station} | {request.item} × {request.quantity} | {request.status.value}"
+            )
 
 
 if __name__ == "__main__":

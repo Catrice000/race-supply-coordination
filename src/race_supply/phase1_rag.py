@@ -65,35 +65,56 @@ class Chunk:
     heading: str = ""
 
 
-def split_document(text: str, size: int = 500, overlap: int = 80,
-                   strategy: str = "paragraph") -> list[Chunk]:
+def split_document(
+    text: str, size: int = 500, overlap: int = 80, strategy: str = "paragraph"
+) -> list[Chunk]:
     """【可复用核心】优先段落/句子边界，保留原文位置、标题与重叠上下文。
 
     超长段落仍受size上限限制；fixed模式兼容最初的500字符无重叠验证。
     heading仅为定位元数据，不计入原文范围，不自动改写业务条款。
     """
     if size < 1 or not 0 <= overlap < size or strategy not in {"paragraph", "fixed"}:
-        raise ValueError("分块参数无效：需0 <= overlap < size，strategy为paragraph或fixed")
+        raise ValueError(
+            "分块参数无效：需0 <= overlap < size，strategy为paragraph或fixed"
+        )
     chunks = []
     boundaries = [m.end() for m in re.finditer(r"\n\s*\n|[。！？；]\s*", text)]
-    headings = [(m.start(), m.group(1).strip())
-                for m in re.finditer(r"^#{1,6}\s+(.+)$", text, re.M)]
+    headings = [
+        (m.start(), m.group(1).strip())
+        for m in re.finditer(r"^#{1,6}\s+(.+)$", text, re.M)
+    ]
     # 标题之间独立分块，避免多条短规则被500字窗口混在一起稀释语义。
-    sections = sorted({0,len(text),*(pos for pos,_ in headings)}) if strategy=="paragraph" else [0,len(text)]
-    for section_start,section_end in zip(sections,sections[1:]):
-        start=section_start
+    sections = (
+        sorted({0, len(text), *(pos for pos, _ in headings)})
+        if strategy == "paragraph"
+        else [0, len(text)]
+    )
+    for section_start, section_end in zip(sections, sections[1:]):
+        start = section_start
         while start < section_end:
             end = min(start + size, section_end)
             if strategy == "paragraph" and end < section_end:
-                choices = [b for b in boundaries if start + max(overlap + 1, size//2) <= b <= end]
+                choices = [
+                    b
+                    for b in boundaries
+                    if start + max(overlap + 1, size // 2) <= b <= end
+                ]
                 if choices:
                     end = choices[-1]
             content = text[start:end]
             if content.strip():
-                heading = next((h for pos,h in reversed(headings) if pos <= start), "")
-                chunks.append(Chunk(f"S{len(chunks)+1}", content, start, end,
-                                    text.count("\n", 0, start) + 1,
-                                    text.count("\n", 0, end-1) + 1, heading))
+                heading = next((h for pos, h in reversed(headings) if pos <= start), "")
+                chunks.append(
+                    Chunk(
+                        f"S{len(chunks)+1}",
+                        content,
+                        start,
+                        end,
+                        text.count("\n", 0, start) + 1,
+                        text.count("\n", 0, end - 1) + 1,
+                        heading,
+                    )
+                )
             if end == section_end:
                 break
             start = end - overlap
@@ -105,17 +126,23 @@ def split_document(text: str, size: int = 500, overlap: int = 80,
 def tokenize(text: str) -> list[str]:
     """【可复用核心】文档、问题使用同一中文分词方式，避免按空格切中文。"""
     import jieba
+
     return [w.lower() for w in jieba.lcut(text) if re.search(r"[\w\u4e00-\u9fff]", w)]
 
 
 def normalized_vectors(values: Any):
     """【可复用核心】FAISS使用float32单位向量，内积即余弦相似度。"""
     import numpy as np
+
     array = np.asarray(values, dtype="float32")
     if array.ndim != 2 or not array.shape[0] or not array.shape[1]:
         raise ValueError("向量必须为非空二维数组")
     norms = np.linalg.norm(array, axis=1, keepdims=True)
-    if not np.isfinite(array).all() or not np.isfinite(norms).all() or (norms <= 0).any():
+    if (
+        not np.isfinite(array).all()
+        or not np.isfinite(norms).all()
+        or (norms <= 0).any()
+    ):
         raise ValueError("向量包含无效数值或零向量")
     return np.ascontiguousarray(array / norms)
 
@@ -137,7 +164,9 @@ class APIConfig:
             return
         parts = urlsplit(self.base_url)
         local = parts.hostname in {"localhost", "127.0.0.1", "::1"}
-        if (parts.scheme != "https" and not (parts.scheme == "http" and local)) or not parts.hostname:
+        if (
+            parts.scheme != "https" and not (parts.scheme == "http" and local)
+        ) or not parts.hostname:
             raise ValueError("远端API必须使用HTTPS；HTTP仅允许本机测试")
         if parts.username or parts.password or parts.query or parts.fragment:
             raise ValueError("API地址不得含凭据、查询参数或片段")
@@ -152,19 +181,28 @@ def post_api(config: APIConfig, route: str, body: dict, *, transport=None) -> di
     后续异步服务可替换成httpx.AsyncClient，业务提示词和检索无需重写。
     """
     import httpx
+
     config.validate()
     key = os.getenv(config.key_env, "")
     if not key and transport is None:
         raise ValueError(f"未配置环境变量 {config.key_env}；请在本地配置密钥")
     try:
-        with httpx.Client(timeout=httpx.Timeout(90, connect=10), transport=transport,
-                          follow_redirects=False) as client:
-            response = client.post(config.base_url.rstrip("/") + route,
-                                   headers={"Authorization": f"Bearer {key}"}, json=body)
+        with httpx.Client(
+            timeout=httpx.Timeout(90, connect=10),
+            transport=transport,
+            follow_redirects=False,
+        ) as client:
+            response = client.post(
+                config.base_url.rstrip("/") + route,
+                headers={"Authorization": f"Bearer {key}"},
+                json=body,
+            )
     except httpx.RequestError:
         raise RuntimeError("API网络连接失败或超时；请检查连接后人工重试") from None
     if response.status_code != 200:
-        raise RuntimeError(f"API请求失败 HTTP {response.status_code}；检查密钥、额度和模型权限")
+        raise RuntimeError(
+            f"API请求失败 HTTP {response.status_code}；检查密钥、额度和模型权限"
+        )
     try:
         data = response.json()
     except ValueError:
@@ -184,13 +222,18 @@ def local_encoder(model_id: str, device: str):
     import onnxruntime as ort
     from tokenizers import Tokenizer
     from huggingface_hub import hf_hub_download
+
     revision = "75c43b069aac4d136ba6bc1122f995fedcfd2781"
     if model_id != "Xenova/bge-small-zh-v1.5":
         raise ValueError("本地适配仅验证Xenova/bge-small-zh-v1.5；其他模型请另行适配")
     files = {}
     for filename in ("tokenizer.json", "onnx/model.onnx"):
-        files[filename] = hf_hub_download(model_id, filename, revision=revision,
-                                          cache_dir=os.getenv("RAG_MODEL_CACHE","work/model_cache"))
+        files[filename] = hf_hub_download(
+            model_id,
+            filename,
+            revision=revision,
+            cache_dir=os.getenv("RAG_MODEL_CACHE", "work/model_cache"),
+        )
     tokenizer = Tokenizer.from_file(files["tokenizer.json"])
     tokenizer.no_truncation()
     tokenizer.enable_padding(pad_id=0, pad_token="[PAD]")
@@ -204,8 +247,20 @@ def local_encoder(model_id: str, device: str):
     # 按需启用一次性能分析，用实际算子provider验证GPU执行，不只检查设备列表。
     options.enable_profiling = os.getenv("RAG_PROFILE_GPU") == "1"
     options.profile_file_prefix = "work/rag_onnx_profile"
-    providers = [("DmlExecutionProvider", {"device_id": int(os.getenv("ONNX_DML_DEVICE_ID", "0"))}), "CPUExecutionProvider"] if selected == "dml" else ["CPUExecutionProvider"]
-    session = ort.InferenceSession(files["onnx/model.onnx"], sess_options=options, providers=providers)
+    providers = (
+        [
+            (
+                "DmlExecutionProvider",
+                {"device_id": int(os.getenv("ONNX_DML_DEVICE_ID", "0"))},
+            ),
+            "CPUExecutionProvider",
+        ]
+        if selected == "dml"
+        else ["CPUExecutionProvider"]
+    )
+    session = ort.InferenceSession(
+        files["onnx/model.onnx"], sess_options=options, providers=providers
+    )
     if selected == "dml" and session.get_providers()[0] != "DmlExecutionProvider":
         raise ValueError("GPU初始化失败，未静默回退CPU")
     print(f"本地模型：{model_id}；修订：{revision}；执行后端：{selected}")
@@ -215,17 +270,27 @@ def local_encoder(model_id: str, device: str):
 def embed_texts(texts: list[str], config: APIConfig, *, is_query: bool = False):
     """【可复用核心】向量供应商独立于对话供应商；分批请求并按index还原顺序。"""
     import numpy as np
+
     if config.backend == "local":
         tokenizer, session, device = local_encoder(config.model, config.device)
-        inputs = [("为这个句子生成表示以用于检索相关文章：" + t) if is_query else t for t in texts]
+        inputs = [
+            ("为这个句子生成表示以用于检索相关文章：" + t) if is_query else t
+            for t in texts
+        ]
         batches = []
         for start in range(0, len(inputs), 8):
-            encoded = tokenizer.encode_batch(inputs[start:start+8])
+            encoded = tokenizer.encode_batch(inputs[start : start + 8])
             if any(len(item.ids) > 512 for item in encoded):
                 raise ValueError("文本超过512 Token，请缩小切片或问题；禁止静默截断")
-            fields = {"input_ids": np.asarray([item.ids for item in encoded], dtype=np.int64),
-                      "attention_mask": np.asarray([item.attention_mask for item in encoded], dtype=np.int64),
-                      "token_type_ids": np.asarray([item.type_ids for item in encoded], dtype=np.int64)}
+            fields = {
+                "input_ids": np.asarray([item.ids for item in encoded], dtype=np.int64),
+                "attention_mask": np.asarray(
+                    [item.attention_mask for item in encoded], dtype=np.int64
+                ),
+                "token_type_ids": np.asarray(
+                    [item.type_ids for item in encoded], dtype=np.int64
+                ),
+            }
             feed = {item.name: fields[item.name] for item in session.get_inputs()}
             outputs = session.run(None, feed)
             # BGE使用最后隐藏层的CLS向量；这里使用已固定并验证的ONNX导出。
@@ -233,7 +298,7 @@ def embed_texts(texts: list[str], config: APIConfig, *, is_query: bool = False):
         return np.concatenate(batches, axis=0)
     batches = []
     for start in range(0, len(texts), 16):
-        batch = texts[start:start+16]
+        batch = texts[start : start + 16]
         data = post_api(config, "/embeddings", {"model": config.model, "input": batch})
         try:
             rows = sorted(data["data"], key=lambda row: row["index"])
@@ -253,15 +318,26 @@ def load_or_build_index(chunks: list[Chunk], config: APIConfig, cache_dir: Path)
     """
     import faiss
     import numpy as np
-    identity = {"schema": 4, "backend": config.backend, "url": config.base_url, "model": config.model,
-                "chunks": [asdict(c) for c in chunks]}
-    digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+    identity = {
+        "schema": 4,
+        "backend": config.backend,
+        "url": config.base_url,
+        "model": config.model,
+        "chunks": [asdict(c) for c in chunks],
+    }
+    digest = hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()
     folder = cache_dir / digest
     index_file, meta_file = folder / "index.faiss", folder / "metadata.json"
     if index_file.exists() and meta_file.exists():
         meta = json.loads(meta_file.read_text(encoding="utf-8"))
         raw = index_file.read_bytes()
-        if meta.get("sha256") != hashlib.sha256(raw).hexdigest() or meta.get("identity") != identity:
+        if (
+            meta.get("sha256") != hashlib.sha256(raw).hexdigest()
+            or meta.get("identity") != identity
+        ):
             raise ValueError("缓存校验失败，请移走该缓存目录后重建")
         index = faiss.deserialize_index(np.frombuffer(raw, dtype="uint8").copy())
         if index.ntotal != len(chunks) or index.d != meta.get("dimension"):
@@ -274,14 +350,29 @@ def load_or_build_index(chunks: list[Chunk], config: APIConfig, cache_dir: Path)
     folder.mkdir(parents=True, exist_ok=True)
     raw = faiss.serialize_index(index).tobytes()
     index_file.write_bytes(raw)
-    meta_file.write_text(json.dumps({"identity": identity, "dimension": index.d,
-                                    "sha256": hashlib.sha256(raw).hexdigest()}, ensure_ascii=False), encoding="utf-8")
+    meta_file.write_text(
+        json.dumps(
+            {
+                "identity": identity,
+                "dimension": index.d,
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     print(f"已写入本地FAISS索引，共{index.ntotal}片")
     return index
 
 
-def hybrid_search(question: str, chunks: list[Chunk], index, bm25, query_vector,
-                  min_score: float = 0.50) -> list[dict]:
+def hybrid_search(
+    question: str,
+    chunks: list[Chunk],
+    index,
+    bm25,
+    query_vector,
+    min_score: float = 0.50,
+) -> list[dict]:
     """【可复用核心】BM25和向量各召回最多20片，以RRF融合再取top3。
 
     不直接相加不同量纲分数。BM25只纳入含问题词的片段，兼容小语料IDF为负。
@@ -293,7 +384,7 @@ def hybrid_search(question: str, chunks: list[Chunk], index, bm25, query_vector,
         raise ValueError("相关性阈值必须在-1至1之间")
     words = tokenize(question)
     scores = bm25.get_scores(words)
-    candidates = [i for i,c in enumerate(chunks) if set(words) & set(tokenize(c.text))]
+    candidates = [i for i, c in enumerate(chunks) if set(words) & set(tokenize(c.text))]
     lexical = sorted(candidates, key=lambda i: (-float(scores[i]), i))[:20]
     similarities, ids = index.search(query_vector, min(20, len(chunks)))
     dense = [int(i) for i in ids[0] if i >= 0]
@@ -309,7 +400,9 @@ def hybrid_search(question: str, chunks: list[Chunk], index, bm25, query_vector,
             cosine[i] = float(index.reconstruct(i) @ query_vector[0])
     eligible = [i for i in fusion if cosine[i] >= min_score]
     top = sorted(eligible, key=lambda i: (-fusion[i], i))[:3]
-    return [{"chunk": chunks[i], "rrf": fusion[i], "cosine": cosine.get(i)} for i in top]
+    return [
+        {"chunk": chunks[i], "rrf": fusion[i], "cosine": cosine.get(i)} for i in top
+    ]
 
 
 def build_prompt(question: str, hits: list[dict], source: str) -> list[dict]:
@@ -329,11 +422,20 @@ def build_prompt(question: str, hits: list[dict], source: str) -> list[dict]:
         "食品安全、医疗、应急调度和正式确认交由具备职责的人员处理。"
         "使用中文，按‘回答／依据／待确认事项’组织，不输出内部推理过程。"
     )
-    evidence = [{"id": h["chunk"].id, "source": source,
-                 "lines": [h["chunk"].line_start, h["chunk"].line_end],
-                 "heading": h["chunk"].heading, "text": h["chunk"].text} for h in hits]
+    evidence = [
+        {
+            "id": h["chunk"].id,
+            "source": source,
+            "lines": [h["chunk"].line_start, h["chunk"].line_end],
+            "heading": h["chunk"].heading,
+            "text": h["chunk"].text,
+        }
+        for h in hits
+    ]
     # JSON序列化只用于分隔数据，不构成防注入或事实正确性的充分保证。
-    content = json.dumps({"question": question, "untrusted_evidence": evidence}, ensure_ascii=False)
+    content = json.dumps(
+        {"question": question, "untrusted_evidence": evidence}, ensure_ascii=False
+    )
     return [{"role": "system", "content": system}, {"role": "user", "content": content}]
 
 
@@ -350,8 +452,7 @@ def call_llm(messages: list[dict], config: APIConfig, *, transport=None) -> str:
         if thinking not in {"disabled", "enabled"}:
             raise ValueError("LLM_THINKING必须为disabled或enabled")
         payload["thinking"] = {"type": thinking}
-    data = post_api(config, "/chat/completions",
-                    payload, transport=transport)
+    data = post_api(config, "/chat/completions", payload, transport=transport)
     try:
         choice = data["choices"][0]
         answer = choice["message"]["content"]
@@ -374,8 +475,16 @@ def check_citations(answer: str, hits: list[dict]) -> None:
         raise ValueError("回答引用了未提供的片段，已阻止展示，请人工核查")
 
 
-def grounded_answer(question: str, hits: list[dict], source: str,
-                    config: APIConfig, *, transport=None, history=None, system_prompt=None) -> str:
+def grounded_answer(
+    question: str,
+    hits: list[dict],
+    source: str,
+    config: APIConfig,
+    *,
+    transport=None,
+    history=None,
+    system_prompt=None,
+) -> str:
     """【可复用核心】要求逐项来源与原文摘录，不支持的事实不展示。
 
     摘录必须是实际原文的连续子串，防止模型编造证据。此为结构/摘录校验，
@@ -393,10 +502,10 @@ def grounded_answer(question: str, hits: list[dict], source: str,
         '只输出JSON对象：{"status":"answered或insufficient","claims":'
         '[{"text":"一项结论","citations":["S1"],"quotes":[{"id":"S1","text":"连续原文摘录"}]}],'
         '"missing":["待确认事项"]}。每项结论必须引用并摘录依据。'
-        '没有足够依据时status必须为insufficient且claims为空，不得输出无依据结论。'
+        "没有足够依据时status必须为insufficient且claims为空，不得输出无依据结论。"
     )
     raw = call_llm(messages, config, transport=transport)
-    return validate_grounded_response(raw,hits)
+    return validate_grounded_response(raw, hits)
 
 
 def validate_grounded_response(raw: str, hits: list[dict]) -> str:
@@ -404,32 +513,53 @@ def validate_grounded_response(raw: str, hits: list[dict]) -> str:
     try:
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
         payload = json.loads(cleaned)
-        if not isinstance(payload, dict) or payload.get("status") not in {"answered", "insufficient"}:
+        if not isinstance(payload, dict) or payload.get("status") not in {
+            "answered",
+            "insufficient",
+        }:
             raise ValueError("回答状态无效")
         claims, missing = payload.get("claims"), payload.get("missing", [])
-        if not isinstance(claims, list) or not isinstance(missing, list) or not all(isinstance(x,str) for x in missing):
+        if (
+            not isinstance(claims, list)
+            or not isinstance(missing, list)
+            or not all(isinstance(x, str) for x in missing)
+        ):
             raise ValueError("回答结构无效")
         if payload["status"] == "insufficient":
             if claims:
                 raise ValueError("资料不足状态不得携带业务结论")
-            return "资料不足，暂不能给出有依据的结论。\n待确认：" + "；".join(missing or ["请补充正式资料或明确问题"])
+            return "资料不足，暂不能给出有依据的结论。\n待确认：" + "；".join(
+                missing or ["请补充正式资料或明确问题"]
+            )
         if not claims or len(claims) > 12:
             raise ValueError("结论数量无效")
         evidence = {h["chunk"].id: h["chunk"].text for h in hits}
         lines = []
         for item in claims:
             text, ids, quotes = item["text"], item["citations"], item["quotes"]
-            if not isinstance(text,str) or not text.strip() or not isinstance(ids,list) or not ids:
+            if (
+                not isinstance(text, str)
+                or not text.strip()
+                or not isinstance(ids, list)
+                or not ids
+            ):
                 raise ValueError("结论缺少引用")
-            if not all(isinstance(i,str) and i in evidence for i in ids) or not isinstance(quotes,list):
+            if not all(
+                isinstance(i, str) and i in evidence for i in ids
+            ) or not isinstance(quotes, list):
                 raise ValueError("引用不属于本次资料")
             # 同时检查结论中模型自行插入的编号，不能用合法外层编号掩盖虚假来源。
-            if set(re.findall(r"\[(S\d+)\]",text)) - set(ids):
+            if set(re.findall(r"\[(S\d+)\]", text)) - set(ids):
                 raise ValueError("结论包含额外来源")
             verified = set()
             for quote in quotes:
                 qid, value = quote["id"], quote["text"]
-                if qid not in ids or not isinstance(value,str) or len(value.strip()) < 4 or value not in evidence[qid]:
+                if (
+                    qid not in ids
+                    or not isinstance(value, str)
+                    or len(value.strip()) < 4
+                    or value not in evidence[qid]
+                ):
                     raise ValueError("摘录与原文不一致")
                 verified.add(qid)
             if verified != set(ids):
@@ -442,7 +572,9 @@ def validate_grounded_response(raw: str, hits: list[dict]) -> str:
             result += "\n待确认（非业务结论）：" + "；".join(missing)
         return result
     except (KeyError, TypeError, ValueError, AttributeError):
-        raise ValueError("回答未通过来源与原文摘录校验，已阻止展示；请人工复核或重试") from None
+        raise ValueError(
+            "回答未通过来源与原文摘录校验，已阻止展示；请人工复核或重试"
+        ) from None
 
 
 def self_test() -> None:
@@ -450,27 +582,46 @@ def self_test() -> None:
     import faiss
     import httpx
     from rank_bm25 import BM25Okapi
-    chunks = split_document("甲"*501, overlap=0, strategy="fixed")
+
+    chunks = split_document("甲" * 501, overlap=0, strategy="fixed")
     assert [len(c.text) for c in chunks] == [500, 1]
     chunks = split_document("饮用水签收检查数量。\n", 8, overlap=0, strategy="fixed")
     vectors = normalized_vectors([[1, 0], [0, 1]])
-    index = faiss.IndexFlatIP(2); index.add(vectors)
+    index = faiss.IndexFlatIP(2)
+    index.add(vectors)
     bm25 = BM25Okapi([tokenize(c.text) for c in chunks])
     hits = hybrid_search("饮用水", chunks, index, bm25, vectors[:1])
     assert len(hits) == 1 and hits[0]["chunk"].id == "S1"
     with tempfile.TemporaryDirectory() as tmp:
-        p = Path(tmp)/"测试索引.faiss"
+        p = Path(tmp) / "测试索引.faiss"
         p.write_bytes(faiss.serialize_index(index).tobytes())
         import numpy as np
-        restored = faiss.deserialize_index(np.frombuffer(p.read_bytes(), dtype="uint8").copy())
+
+        restored = faiss.deserialize_index(
+            np.frombuffer(p.read_bytes(), dtype="uint8").copy()
+        )
         assert restored.ntotal == 2
+
     def handler(request):
         payload = json.loads(request.content)
-        assert request.url.path == "/api/v1/chat/completions" and payload["model"] == "test-only"
-        return httpx.Response(200, json={"choices": [{"message": {"content": "需核对数量[S1]"}, "finish_reason": "stop"}]})
-    answer = call_llm(build_prompt("签收", hits, "虚构.md"),
-                      APIConfig("https://example.test/api/v1", "test-only", "TEST_ONLY_KEY"),
-                      transport=httpx.MockTransport(handler))
+        assert (
+            request.url.path == "/api/v1/chat/completions"
+            and payload["model"] == "test-only"
+        )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": "需核对数量[S1]"}, "finish_reason": "stop"}
+                ]
+            },
+        )
+
+    answer = call_llm(
+        build_prompt("签收", hits, "虚构.md"),
+        APIConfig("https://example.test/api/v1", "test-only", "TEST_ONLY_KEY"),
+        transport=httpx.MockTransport(handler),
+    )
     check_citations(answer, hits)
     try:
         check_citations("虚假来源[S999]", hits)
@@ -490,28 +641,50 @@ def main() -> None:
     parser.add_argument("--cache-dir", type=Path, default=Path("work/rag_cache"))
     parser.add_argument("--chunk-size", type=int, default=500)
     parser.add_argument("--chunk-overlap", type=int, default=80)
-    parser.add_argument("--chunk-strategy", choices=["paragraph", "fixed"], default="paragraph")
-    parser.add_argument("--min-score", type=float, default=0.50, help="余弦门槛，须结合领域评测调参")
+    parser.add_argument(
+        "--chunk-strategy", choices=["paragraph", "fixed"], default="paragraph"
+    )
+    parser.add_argument(
+        "--min-score", type=float, default=0.50, help="余弦门槛，须结合领域评测调参"
+    )
     parser.add_argument("--question", help="单次提问；不传则交互输入")
-    parser.add_argument("--retrieval-only", action="store_true", help="仅检索；local模式不需要密钥")
+    parser.add_argument(
+        "--retrieval-only", action="store_true", help="仅检索；local模式不需要密钥"
+    )
     parser.add_argument("--self-test", action="store_true", help="不联网的核心流程验证")
-    parser.add_argument("--embedding-backend", choices=["local", "api"], default="local",
-                        help="默认本地中文BGE；api保留原在线向量接入")
+    parser.add_argument(
+        "--embedding-backend",
+        choices=["local", "api"],
+        default="local",
+        help="默认本地中文BGE；api保留原在线向量接入",
+    )
     parser.add_argument("--device", choices=["auto", "cpu", "dml"], default="auto")
     args = parser.parse_args()
     if args.self_test:
-        self_test(); return
+        self_test()
+        return
     if not args.document or args.document.suffix.lower() != ".md":
         parser.error("请使用 --document 指定本地赛事补给 .md 文件")
     from dotenv import load_dotenv
     from rank_bm25 import BM25Okapi
+
     # 已有进程环境优先，文件不覆盖部署环境中的配置；绝不打印密钥。
     load_dotenv(args.env_file, override=False)
-    embedding = APIConfig(os.getenv("EMBEDDING_BASE_URL", "https://openrouter.ai/api/v1"),
-                          os.getenv("EMBEDDING_MODEL", "Xenova/bge-small-zh-v1.5" if args.embedding_backend == "local" else ""),
-                          os.getenv("EMBEDDING_API_KEY_ENV", "OPENROUTER_API_KEY"), args.embedding_backend, args.device)
-    llm = APIConfig(os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
-                    os.getenv("LLM_MODEL", ""), os.getenv("LLM_API_KEY_ENV", "OPENROUTER_API_KEY"))
+    embedding = APIConfig(
+        os.getenv("EMBEDDING_BASE_URL", "https://openrouter.ai/api/v1"),
+        os.getenv(
+            "EMBEDDING_MODEL",
+            "Xenova/bge-small-zh-v1.5" if args.embedding_backend == "local" else "",
+        ),
+        os.getenv("EMBEDDING_API_KEY_ENV", "OPENROUTER_API_KEY"),
+        args.embedding_backend,
+        args.device,
+    )
+    llm = APIConfig(
+        os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
+        os.getenv("LLM_MODEL", ""),
+        os.getenv("LLM_API_KEY_ENV", "OPENROUTER_API_KEY"),
+    )
     embedding.validate()
     if not args.retrieval_only:
         llm.validate()
@@ -519,16 +692,22 @@ def main() -> None:
             raise ValueError(f"未配置 {llm.key_env}；尚不发起计费请求")
     if embedding.backend == "api" and not os.getenv(embedding.key_env):
         raise ValueError(f"未配置 {embedding.key_env}；向量API需要单独确认可用模型")
-    if args.document.stat().st_size > 10*1024*1024:
+    if args.document.stat().st_size > 10 * 1024 * 1024:
         raise ValueError("原型只处理10MB以内的UTF-8 Markdown")
     text = args.document.read_text(encoding="utf-8-sig")
-    chunks = split_document(text, args.chunk_size, args.chunk_overlap, args.chunk_strategy)
+    chunks = split_document(
+        text, args.chunk_size, args.chunk_overlap, args.chunk_strategy
+    )
     index = load_or_build_index(chunks, embedding, args.cache_dir)
     bm25 = BM25Okapi([tokenize(c.text) for c in chunks])
     print("输入问题；输入 /exit 退出。本原型每次独立检索，不维护多轮会话记忆。")
     while True:
         try:
-            question = args.question if args.question is not None else input("\n问题> ").strip()
+            question = (
+                args.question
+                if args.question is not None
+                else input("\n问题> ").strip()
+            )
             if question is None or question.strip() == "/exit":
                 break
             question = question.strip()
@@ -538,7 +717,14 @@ def main() -> None:
                 continue
             if len(question) > 2000:
                 raise ValueError("问题最长2000字符")
-            hits = hybrid_search(question, chunks, index, bm25, embed_texts([question], embedding, is_query=True), args.min_score)
+            hits = hybrid_search(
+                question,
+                chunks,
+                index,
+                bm25,
+                embed_texts([question], embedding, is_query=True),
+                args.min_score,
+            )
             if not hits:
                 print("资料不足：未找到达到相关性门槛的来源，请补充具体问题或资料。")
                 if args.question is not None:
@@ -547,7 +733,9 @@ def main() -> None:
             print("\n检索来源（RRF为排序分数，不是置信度）：")
             for h in hits:
                 c = h["chunk"]
-                print(f"[{c.id}] {args.document.name} 第{c.line_start}—{c.line_end}行；RRF={h['rrf']:.5f}")
+                print(
+                    f"[{c.id}] {args.document.name} 第{c.line_start}—{c.line_end}行；RRF={h['rrf']:.5f}"
+                )
                 if args.retrieval_only:
                     print(c.text)
             if not args.retrieval_only:
@@ -558,7 +746,8 @@ def main() -> None:
             if args.question is not None:
                 break
         except (EOFError, KeyboardInterrupt):
-            print("\n已退出。 "); break
+            print("\n已退出。 ")
+            break
         except (ValueError, RuntimeError) as error:
             print(f"处理失败：{error}", file=sys.stderr)
             if args.question is not None:
